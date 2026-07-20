@@ -13,6 +13,7 @@ Layer 3: export-formats (deps: change-point-model, state-store)
 Layer 4: server-api (deps: state-store, repo-config, export-formats)
 Layer 5: ui-shell-tree (deps: server-api)
 Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps public/app.js]
+         visual-redesign (deps: diff-render)          [sequential — overlaps public/app.js]
          ui-comments-export (deps: ui-shell-tree)    [sequential — overlaps public/app.js]
          ui-keyboard-help (deps: ui-shell-tree)      [sequential — overlaps public/app.js]
          jarvis-skill (deps: server-api)             [parallel — no overlap]
@@ -175,6 +176,31 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
   - [ ] 已勾的變更點淡化、當前的高亮
 - **Status**: Pending
 
+### visual-redesign
+- **Spec 章節**: 使用者於 2026-07-20 追加要求（原 spec 未涵蓋視覺設計）
+- **Name**: 深色設計系統套用與版面重整
+- **Scope**: 依 `design-system/local-code-review/MASTER.md` 與 `ADDENDUM.md`（衝突時
+  以 ADDENDUM 為準）重做整體視覺：深色 token 化色盤、vendor 字體、三層樹的視覺層級、
+  變更點改用左側色條取代外框、diff 行低飽和底色以與 Prism 疊加、自訂 checkbox 與 select、
+  鍵盤優先的 focus 與當前態強度。資訊密度為第一原則。
+- **Deps**: diff-render
+- **Tier**: 2
+- **Touches**: `public/style.css`, `public/app.js`, `public/index.html`, `public/vendor/fonts/`
+- **Acceptance**:
+  - [ ] 色彩全部走語意 token，元件內無裸 hex
+  - [ ] 字體 vendor 在 `public/vendor/fonts/`，離線可用，不連 CDN
+  - [ ] 樹的三層在不看縮排的情況下也能分辨（字體 / 字重 / 字級各異）
+  - [ ] 檔案與 function 層有細進度條，可掃視「還剩多少沒看」
+  - [ ] 變更點以左側色條表達狀態，未讀 / 當前 / 已讀 / 當前+已讀 四態皆可辨
+  - [ ] 變更點標題列 sticky
+  - [ ] diff 行用低飽和底色，Prism 語法上色仍清晰可見
+  - [ ] 行號使用 tabular numerals，捲動時不跳動
+  - [ ] focus ring 明顯且未被移除；當前態強度高於 hover
+  - [ ] checkbox 與 select 已重繪，深色下不出現作業系統亮色控制項
+  - [ ] `prefers-reduced-motion` 時關閉平滑捲動與過場
+  - [ ] `prefers-color-scheme: light` 有可用的亮色對應
+- **Status**: Pending
+
 ### ui-comments-export
 - **Spec 章節**: 畫面 + 匯出 — 前端部分
 - **Name**: Comment UI 與匯出按鈕
@@ -227,8 +253,8 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 
 | Status | Count |
 |--------|-------|
-| Pending | 3 |
+| Pending | 4 |
 | In Progress | 0 |
 | Completed | 8 |
 | Failed | 0 |
-| Total | 11 |
+| Total | 12 |
