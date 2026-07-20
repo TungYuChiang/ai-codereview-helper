@@ -136,12 +136,12 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 - **Tier**: 2
 - **Touches**: `review.js`, `server.js`, `package.json`, `test/server.test.js`
 - **Acceptance**:
-  - [ ] `node review.js` 起在 port 7777 並提供 `public/` 靜態檔
-  - [ ] 六個 endpoint 皆回傳 spec 描述的資料
-  - [ ] `/api/diff` 回傳已合併勾與 comment 的三層樹
-  - [ ] `/api/check` 與 `/api/comment` 的變更會持久化
-  - [ ] git 指令失敗（如 ref 不存在）回傳可讀錯誤而非 500 stack trace
-- **Status**: Pending
+  - [x] `node review.js` 起在 port 7777 並提供 `public/` 靜態檔
+  - [x] 六個 endpoint 皆回傳 spec 描述的資料
+  - [x] `/api/diff` 回傳已合併勾與 comment 的三層樹
+  - [x] `/api/check` 與 `/api/comment` 的變更會持久化
+  - [x] git 指令失敗（如 ref 不存在）回傳可讀錯誤而非 500 stack trace
+- **Status**: Completed (`f4dddbf`..`eaf74fc`)
 
 ### ui-shell-tree
 - **Spec 章節**: 畫面 / 版面 — `public/`
@@ -227,8 +227,8 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 
 | Status | Count |
 |--------|-------|
-| Pending | 4 |
+| Pending | 3 |
 | In Progress | 0 |
-| Completed | 7 |
+| Completed | 8 |
 | Failed | 0 |
 | Total | 11 |
