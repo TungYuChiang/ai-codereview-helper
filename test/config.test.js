@@ -250,6 +250,106 @@ describe('removeRepo', () => {
 });
 
 // ---------------------------------------------------------------------------
+// concurrency: serialized read-modify-write
+// ---------------------------------------------------------------------------
+
+describe('concurrent addRepo / removeRepo', () => {
+  test('concurrent addRepo of two different paths yields two entries, not one', async () => {
+    const dir1 = await makeFakeGitRepo('concurrent-add-1');
+    const dir2 = await makeFakeGitRepo('concurrent-add-2');
+
+    const [r1, r2] = await Promise.all([addRepo(dir1), addRepo(dir2)]);
+
+    assert.equal(r1.path, resolve(dir1));
+    assert.equal(r2.path, resolve(dir2));
+
+    const repos = await listRepos();
+    assert.equal(repos.length, 2);
+    assert.ok(repos.some((r) => r.id === r1.id));
+    assert.ok(repos.some((r) => r.id === r2.id));
+
+    await rm(dir1, { recursive: true, force: true });
+    await rm(dir2, { recursive: true, force: true });
+  });
+
+  test('concurrent addRepo of the same path yields one entry and consistent return values', async () => {
+    const dir = await makeFakeGitRepo('concurrent-add-same');
+
+    const [r1, r2] = await Promise.all([addRepo(dir), addRepo(dir)]);
+
+    assert.deepEqual(r1, r2);
+
+    const repos = await listRepos();
+    assert.equal(repos.length, 1);
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test('many concurrent addRepo calls for distinct paths never lose a write', async () => {
+    const dirs = await Promise.all(
+      Array.from({ length: 8 }, (_, i) => makeFakeGitRepo(`concurrent-add-many-${i}`))
+    );
+
+    await Promise.all(dirs.map((dir) => addRepo(dir)));
+
+    const repos = await listRepos();
+    assert.equal(repos.length, dirs.length);
+
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  test('concurrent removeRepo calls do not lose entries', async () => {
+    const dir1 = await makeFakeGitRepo('concurrent-remove-1');
+    const dir2 = await makeFakeGitRepo('concurrent-remove-2');
+    const dir3 = await makeFakeGitRepo('concurrent-remove-3');
+
+    const repo1 = await addRepo(dir1);
+    const repo2 = await addRepo(dir2);
+    const repo3 = await addRepo(dir3);
+
+    const [removed1, removed2] = await Promise.all([
+      removeRepo(repo1.id),
+      removeRepo(repo2.id),
+    ]);
+
+    assert.equal(removed1, true);
+    assert.equal(removed2, true);
+
+    const repos = await listRepos();
+    assert.equal(repos.length, 1);
+    assert.equal(repos[0].id, repo3.id);
+
+    await rm(dir1, { recursive: true, force: true });
+    await rm(dir2, { recursive: true, force: true });
+    await rm(dir3, { recursive: true, force: true });
+  });
+
+  test('concurrent readers never observe an uncaught rejection on corrupt config.json', async () => {
+    await mkdir(baseDir(), { recursive: true });
+    await writeFile(configPath(), '{ this is not valid json');
+
+    // Several concurrent reads should all resolve to an empty list, never
+    // reject -- even though the underlying recovery does a rename() that
+    // cannot succeed twice against the same source file.
+    const results = await Promise.all([
+      listRepos(),
+      listRepos(),
+      getRepo('anything'),
+      listRepos(),
+    ]);
+
+    assert.deepEqual(results[0], []);
+    assert.deepEqual(results[1], []);
+    assert.equal(results[2], null);
+    assert.deepEqual(results[3], []);
+
+    const entries = await readdir(baseDir());
+    const backups = entries.filter((f) => /^config\.json\.corrupt-\d+$/.test(f));
+    assert.ok(backups.length >= 1, `expected at least one corrupt-* backup file, got: ${entries.join(', ')}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // getRepo
 // ---------------------------------------------------------------------------
 

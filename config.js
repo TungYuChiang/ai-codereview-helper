@@ -12,6 +12,14 @@ import { mkdir, readFile, writeFile, rename, stat, unlink } from 'node:fs/promis
 import { homedir } from 'node:os';
 import { join, resolve, basename } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
+import { createMutex } from './lock.js';
+
+// Serializes every read-modify-write against config.json so that concurrent
+// callers (e.g. two addRepo() calls from a double-click, or two open tabs)
+// can never both read the pre-mutation config and have the second write
+// silently clobber the first. Also serializes the corrupt-config recovery
+// path (rename + rebuild) so two concurrent readers can't race each other.
+const configLock = createMutex();
 
 export function baseDir() {
   return process.env.LCR_HOME || join(homedir(), '.local-code-review');
@@ -53,7 +61,12 @@ async function ensureDirs() {
   await mkdir(stateDir(), { recursive: true });
 }
 
-async function readConfig() {
+// Reads config.json without acquiring configLock. Only call this from
+// inside a configLock-guarded critical section (either directly, as
+// readConfig() does, or as part of a larger read-modify-write like
+// addRepo/removeRepo) -- never standalone, or the corrupt-recovery race
+// this is meant to prevent comes right back.
+async function readConfigLocked() {
   await ensureDirs();
 
   let raw;
@@ -71,16 +84,35 @@ async function readConfig() {
       throw new Error('config.json does not have the expected { repos: [] } shape');
     }
   } catch {
-    // Corrupt or unexpected structure: back it up, then rebuild an empty config
-    // so the tool keeps working instead of crashing.
-    const backupPath = `${configPath()}.corrupt-${Date.now()}`;
-    await rename(configPath(), backupPath);
+    // Corrupt or unexpected structure: back it up, then rebuild an empty
+    // config so the tool keeps working instead of crashing. This whole
+    // branch is best-effort and must never itself throw -- a corrupt
+    // config.json should degrade to an empty list, never crash the caller,
+    // regardless of what the backup/rebuild steps below do.
     const empty = { repos: [] };
-    await writeConfig(empty);
+    try {
+      const backupPath = `${configPath()}.corrupt-${Date.now()}`;
+      await rename(configPath(), backupPath);
+    } catch {
+      // Best effort only: if the corrupt file can't be moved (e.g. it was
+      // already moved by an earlier recovery), fall through and still
+      // recover to an empty, working config below.
+    }
+    try {
+      await writeConfig(empty);
+    } catch {
+      // Best effort only: even if the rebuilt config can't be persisted
+      // right now, return the in-memory empty list so the caller never
+      // crashes on a corrupt file.
+    }
     return empty;
   }
 
   return parsed;
+}
+
+async function readConfig() {
+  return configLock(() => readConfigLocked());
 }
 
 async function writeConfig(config) {
@@ -119,24 +151,32 @@ export async function addRepo(repoPath) {
   }
 
   const id = repoId(normalized);
-  const config = await readConfig();
-  const existing = config.repos.find((r) => r.id === id);
-  if (existing) return existing;
 
-  const repo = { id, path: normalized, name: basename(normalized) };
-  config.repos.push(repo);
-  await writeConfig(config);
-  return repo;
+  // Read, mutate, and write as a single critical section so a concurrent
+  // addRepo/removeRepo can never read the same pre-mutation config and
+  // silently clobber this write (or vice versa).
+  return configLock(async () => {
+    const config = await readConfigLocked();
+    const existing = config.repos.find((r) => r.id === id);
+    if (existing) return existing;
+
+    const repo = { id, path: normalized, name: basename(normalized) };
+    config.repos.push(repo);
+    await writeConfig(config);
+    return repo;
+  });
 }
 
 export async function removeRepo(id) {
-  const config = await readConfig();
-  const index = config.repos.findIndex((r) => r.id === id);
-  if (index === -1) return false;
+  return configLock(async () => {
+    const config = await readConfigLocked();
+    const index = config.repos.findIndex((r) => r.id === id);
+    if (index === -1) return false;
 
-  config.repos.splice(index, 1);
-  await writeConfig(config);
-  return true;
+    config.repos.splice(index, 1);
+    await writeConfig(config);
+    return true;
+  });
 }
 
 export async function getRepo(id) {
