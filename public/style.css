@@ -330,6 +330,17 @@ select:focus-visible {
   border-color: var(--color-accent);
 }
 
+/* Repo names are user-controlled directory basenames and can be long --
+ * without a cap the picker alone can eat most of the top bar (see addendum
+ * 資訊密度是第一原則). Full path is still reachable via title (see
+ * updateRepoSelectTitle() / option.title in app.js). */
+#repo-select {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 input[type="text"] {
   font-family: var(--font-sans);
   font-size: 12.5px;
@@ -580,8 +591,10 @@ input[type="checkbox"]:checked::after {
 /* horizontal space goes to code instead of chrome. Four states:           */
 /*   unread            -> rail = ghost color                               */
 /*   current            -> rail = accent, body = panel surface             */
-/*   read               -> whole block opacity .55, rail stays accent      */
-/*   current AND read   -> rail full strength, body still dimmed           */
+/*   read               -> whole block opacity .55, rail stays accent,     */
+/*                         notch cut into the rail                         */
+/*   current AND read   -> rail full strength, body dimmed less (.75),     */
+/*                         same notch as read                              */
 /* ---------------------------------------------------------------------- */
 
 #changepoints-root {
@@ -589,6 +602,7 @@ input[type="checkbox"]:checked::after {
 }
 
 .changepoint {
+  position: relative;
   border-left: 3px solid var(--color-rail-unread);
   border-radius: 0 4px 4px 0;
   margin-bottom: 8px;
@@ -609,6 +623,27 @@ input[type="checkbox"]:checked::after {
 .changepoint.checked .changepoint-header,
 .changepoint.checked .changepoint-content {
   opacity: 0.55;
+}
+
+/* "Read" gets a small notch cut into the rail itself, in addition to the
+ * color/opacity changes -- review flagged that "current" vs "current + read"
+ * previously read as a 25% content-opacity delta only, too thin a signal.
+ * The notch masks a short slice of the border with the change-point's own
+ * background, so it reads as a physical mark on the state channel (the
+ * rail) rather than another opacity step. No new hue: it reuses whichever
+ * background color the block already has for its current state. */
+.changepoint.checked::before {
+  content: "";
+  position: absolute;
+  left: -3px;
+  top: 9px;
+  width: 3px;
+  height: 5px;
+  background: var(--color-bg);
+}
+
+.changepoint.current.checked::before {
+  background: var(--color-panel);
 }
 
 /* Current: rail full accent, panel background, content at full strength --

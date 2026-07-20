@@ -174,12 +174,48 @@ function setOrRemove(key, value) {
 
 function populateRepoSelect() {
   repoSelectEl.textContent = '';
+
+  // Two repos can share a basename (e.g. ~/work/app vs ~/side/app) -- config.js
+  // already disambiguates them by id (path hash), but the option *text* also
+  // needs to tell them apart without relying on hover. Append the parent
+  // directory only for names that actually collide, so the common case stays
+  // as short as possible.
+  const nameCounts = new Map();
   for (const repo of appState.repos) {
-    const opt = createEl('option', { text: `${repo.name} (${repo.path})` });
+    nameCounts.set(repo.name, (nameCounts.get(repo.name) || 0) + 1);
+  }
+
+  for (const repo of appState.repos) {
+    const label = nameCounts.get(repo.name) > 1
+      ? `${repo.name} — ${parentDirName(repo.path)}`
+      : repo.name;
+    const opt = createEl('option', { text: label });
     opt.value = repo.id;
+    opt.title = repo.path;
     repoSelectEl.appendChild(opt);
   }
   if (appState.repo) repoSelectEl.value = appState.repo;
+  updateRepoSelectTitle();
+}
+
+// Last path segment before the given path's own basename, e.g.
+// "/Users/x/work/app" -> "work". Used only to disambiguate same-named repos.
+function parentDirName(path) {
+  const trimmed = path.replace(/\/+$/, '');
+  const idx = trimmed.lastIndexOf('/');
+  if (idx <= 0) return trimmed;
+  const parent = trimmed.slice(0, idx);
+  const parentIdx = parent.lastIndexOf('/');
+  return parent.slice(parentIdx + 1);
+}
+
+// The <select> itself also carries the full path of whichever repo is
+// currently selected, so hovering the closed control (not just an open
+// option) reveals the full path -- ellipsis-truncated text in the closed
+// state would otherwise recover nothing.
+function updateRepoSelectTitle() {
+  const repo = appState.repos.find((r) => r.id === appState.repo);
+  repoSelectEl.title = repo ? repo.path : '';
 }
 
 function dedupeRepos(repos) {
@@ -195,6 +231,7 @@ function dedupeRepos(repos) {
 
 repoSelectEl.addEventListener('change', async () => {
   appState.repo = repoSelectEl.value;
+  updateRepoSelectTitle();
   saveSelection();
   await loadRefsForRepo();
 });
@@ -223,6 +260,7 @@ addRepoFormEl.addEventListener('submit', async (e) => {
     populateRepoSelect();
     appState.repo = repo.id;
     repoSelectEl.value = repo.id;
+    updateRepoSelectTitle();
     addRepoInputEl.value = '';
     addRepoFormEl.hidden = true;
     saveSelection();
