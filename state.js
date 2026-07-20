@@ -39,15 +39,39 @@ function isValidState(parsed) {
 // ---------------------------------------------------------------------------
 // changePointKey — the whole invalidation rule lives here.
 //
-// key = sha256(filePath + '\0' + (functionName ?? '') + '\0' + diffText),
-// first 16 hex chars. Deliberately excludes newStart/newEnd/hunkIndex/lines
-// so amend-induced line shifts don't change the key, while any real edit to
-// the change point's content (or a function rename) does.
+// key = sha256(filePath + '\0' + (functionName ?? '') + '\0' + diffText +
+//              '\0' + ordinal), first 16 hex chars. Deliberately excludes
+// newStart/newEnd/hunkIndex/lines so amend-induced line shifts don't change
+// the key, while any real edit to the change point's content (or a function
+// rename) does.
+//
+// `ordinal` is the occurrence index (0-based) of this change point within
+// its (filePath, functionName, diffText) bucket, counted in tree order
+// (files in array order, then groups in array order, then change points in
+// array order). Without it, two change points in the same file/function
+// with byte-identical diffText -- e.g. the same one-line edit repeated
+// twice inside a function -- would collapse onto the same key, and
+// confirming one would silently mark the other reviewed too.
+//
+// There is deliberately no default value for `ordinal`: a lone ChangePoint
+// cannot know its own position within its bucket, so computing this key
+// requires the full enumeration context. The only correct caller is the
+// tree walk in `annotate` (see buildAnnotated below), which tracks
+// per-bucket counts as it goes. Passing a bad ordinal throws rather than
+// silently degrading back into the collapsing-keys bug this fixes.
 // ---------------------------------------------------------------------------
 
-export function changePointKey(changePoint) {
+export function changePointKey(changePoint, ordinal) {
+  if (!Number.isInteger(ordinal) || ordinal < 0) {
+    throw new Error(
+      'changePointKey: ordinal is required and must be a non-negative integer -- ' +
+        'it is the occurrence index of this change point within its ' +
+        '(filePath, functionName, diffText) bucket, computed during the tree walk ' +
+        '(see annotate/buildAnnotated), not something a lone ChangePoint can supply on its own.',
+    );
+  }
   const { filePath, functionName, diffText } = changePoint;
-  const raw = [filePath, functionName ?? '', diffText].join('\0');
+  const raw = [filePath, functionName ?? '', diffText, String(ordinal)].join('\0');
   return createHash('sha256').update(raw).digest('hex').slice(0, 16);
 }
 
@@ -164,12 +188,24 @@ export async function setComment(repoId, key, text, context) {
     if (typeof text !== 'string' || text.trim() === '') {
       delete state.comments[key];
     } else {
+      // filePath/diffText are the snapshot fields that let an orphaned
+      // comment show the user *what* it was about instead of just a hash
+      // (see CommentRecord in the brief). A missing/non-string value here
+      // would silently degrade into an unexplained orphan later, so fail
+      // loudly now instead. functionName may legitimately be null (e.g. a
+      // file-level comment), so that one still defaults quietly.
+      if (typeof context?.filePath !== 'string') {
+        throw new Error('setComment: context.filePath is required and must be a string');
+      }
+      if (typeof context?.diffText !== 'string') {
+        throw new Error('setComment: context.diffText is required and must be a string');
+      }
       state.comments[key] = {
         text,
         updatedAt: new Date().toISOString(),
-        filePath: context?.filePath ?? null,
-        functionName: context?.functionName ?? null,
-        diffText: context?.diffText ?? null,
+        filePath: context.filePath,
+        functionName: context.functionName ?? null,
+        diffText: context.diffText,
       };
     }
     await writeStateUnlocked(repoId, state);
@@ -202,9 +238,27 @@ export async function discardOrphan(repoId, key) {
 
 function buildAnnotated(state, fileNodes) {
   const seenKeys = new Set();
+  // Occurrence counters, one per (filePath, functionName, diffText) bucket,
+  // incremented as change points are walked in tree order (files, then
+  // groups, then change points -- all in array order). This is what lets
+  // two byte-identical change points in the same function get distinct
+  // keys instead of collapsing onto one (Finding 1).
+  const bucketCounts = new Map();
+  // Comment keys already counted toward stats.comments, so a key is never
+  // counted twice even defensively (Finding 2) -- though with per-occurrence
+  // keys now unique by construction, a key can in practice only be visited
+  // once per walk anyway.
+  const countedCommentKeys = new Set();
   let statsTotal = 0;
   let statsChecked = 0;
   let statsComments = 0;
+
+  function nextOrdinal(changePoint) {
+    const bucket = [changePoint.filePath, changePoint.functionName ?? '', changePoint.diffText].join('\0');
+    const ordinal = bucketCounts.get(bucket) ?? 0;
+    bucketCounts.set(bucket, ordinal + 1);
+    return ordinal;
+  }
 
   const files = fileNodes.map((file) => {
     let fileChecked = 0;
@@ -213,13 +267,20 @@ function buildAnnotated(state, fileNodes) {
       let groupChecked = 0;
 
       const changePoints = group.changePoints.map((changePoint) => {
-        const key = changePointKey(changePoint);
+        const ordinal = nextOrdinal(changePoint);
+        const key = changePointKey(changePoint, ordinal);
         seenKeys.add(key);
 
         const checked = state.checked[key] === true;
-        const commentRecord = state.comments[key];
+        const commentRecord = Object.hasOwn(state.comments, key) ? state.comments[key] : undefined;
         if (checked) groupChecked += 1;
-        if (commentRecord) statsComments += 1;
+        // Count distinct comment *keys*, not one per annotated change
+        // point, so a comment can never be counted more than once even if
+        // something upstream produced a repeated key.
+        if (commentRecord && !countedCommentKeys.has(key)) {
+          countedCommentKeys.add(key);
+          statsComments += 1;
+        }
 
         return {
           ...changePoint,

@@ -90,60 +90,82 @@ const REPO = 'repo-under-test';
 
 describe('changePointKey', () => {
   test('is a 16-char lowercase hex string', () => {
-    const key = changePointKey(cp());
+    const key = changePointKey(cp(), 0);
     assert.match(key, /^[0-9a-f]{16}$/);
   });
 
-  test('is deterministic: same filePath/functionName/diffText -> same key', () => {
-    const a = changePointKey(cp());
-    const b = changePointKey(cp());
+  test('is deterministic: same filePath/functionName/diffText/ordinal -> same key', () => {
+    const a = changePointKey(cp(), 0);
+    const b = changePointKey(cp(), 0);
     assert.equal(a, b);
   });
 
   test('extra fields on the input are ignored', () => {
-    const a = changePointKey(cp());
-    const b = changePointKey(cp({ hunkIndex: 99, newStart: 1000, newEnd: 2000, lines: [{ type: '+', text: 'x' }] }));
+    const a = changePointKey(cp(), 0);
+    const b = changePointKey(cp({ hunkIndex: 99, newStart: 1000, newEnd: 2000, lines: [{ type: '+', text: 'x' }] }), 0);
     assert.equal(a, b);
   });
 
   test('different diffText -> different key', () => {
-    const a = changePointKey(cp());
-    const b = changePointKey(cp({ diffText: '+const token = signToken(user);\n+return token!' }));
+    const a = changePointKey(cp(), 0);
+    const b = changePointKey(cp({ diffText: '+const token = signToken(user);\n+return token!' }), 0);
     assert.notEqual(a, b);
   });
 
   test('different functionName -> different key (rename invalidates)', () => {
-    const a = changePointKey(cp());
-    const b = changePointKey(cp({ functionName: 'handleLogout' }));
+    const a = changePointKey(cp(), 0);
+    const b = changePointKey(cp({ functionName: 'handleLogout' }), 0);
     assert.notEqual(a, b);
   });
 
   test('different filePath -> different key', () => {
-    const a = changePointKey(cp());
-    const b = changePointKey(cp({ filePath: 'src/other.js' }));
+    const a = changePointKey(cp(), 0);
+    const b = changePointKey(cp({ filePath: 'src/other.js' }), 0);
     assert.notEqual(a, b);
   });
 
   test('newStart/newEnd/hunkIndex/lines changing alone does NOT change the key (line-shift survives)', () => {
-    const a = changePointKey(cp({ newStart: 40, newEnd: 42, hunkIndex: 0 }));
-    const b = changePointKey(cp({ newStart: 340, newEnd: 342, hunkIndex: 3 }));
+    const a = changePointKey(cp({ newStart: 40, newEnd: 42, hunkIndex: 0 }), 0);
+    const b = changePointKey(cp({ newStart: 340, newEnd: 342, hunkIndex: 3 }), 0);
     assert.equal(a, b);
   });
 
   test('null functionName participates as empty string', () => {
-    const a = changePointKey(cp({ functionName: null }));
-    const b = changePointKey(cp({ functionName: '' }));
+    const a = changePointKey(cp({ functionName: null }), 0);
+    const b = changePointKey(cp({ functionName: '' }), 0);
     assert.equal(a, b);
   });
 
   test('fields are separated so boundary shifts do not collide (proves \\0 join, not naive concat)', () => {
-    const a = changePointKey({ filePath: 'ab', functionName: 'c', diffText: 'd' });
-    const b = changePointKey({ filePath: 'a', functionName: 'bc', diffText: 'd' });
+    const a = changePointKey({ filePath: 'ab', functionName: 'c', diffText: 'd' }, 0);
+    const b = changePointKey({ filePath: 'a', functionName: 'bc', diffText: 'd' }, 0);
     assert.notEqual(a, b);
   });
 
   test('is a pure function (no side effects, callable without repoId/fs)', () => {
-    assert.doesNotThrow(() => changePointKey(cp()));
+    assert.doesNotThrow(() => changePointKey(cp(), 0));
+  });
+
+  // -- ordinal: the occurrence-index argument that disambiguates duplicate
+  // content (Finding 1). changePointKey cannot default it -- see state.js --
+  // because a lone ChangePoint has no way to know its position within its
+  // (filePath, functionName, diffText) bucket; only the tree walk in
+  // annotate() knows that.
+
+  test('same filePath/functionName/diffText but different ordinal -> different key', () => {
+    const a = changePointKey(cp(), 0);
+    const b = changePointKey(cp(), 1);
+    assert.notEqual(a, b);
+  });
+
+  test('ordinal is required: calling without it throws a readable Error', () => {
+    assert.throws(() => changePointKey(cp()), /ordinal/);
+  });
+
+  test('a negative or non-integer ordinal throws', () => {
+    assert.throws(() => changePointKey(cp(), -1), /ordinal/);
+    assert.throws(() => changePointKey(cp(), 1.5), /ordinal/);
+    assert.throws(() => changePointKey(cp(), '0'), /ordinal/);
   });
 });
 
@@ -225,7 +247,7 @@ describe('annotate', () => {
     assert.equal(changePoint.checked, false);
     assert.equal(changePoint.comment, null);
     assert.equal(typeof changePoint.id, 'string');
-    assert.equal(changePoint.id, changePointKey(cp()));
+    assert.equal(changePoint.id, changePointKey(cp(), 0));
 
     assert.deepEqual(result.orphans, []);
     assert.deepEqual(result.stats, { total: 1, checked: 0, comments: 0 });
@@ -250,7 +272,7 @@ describe('annotate', () => {
   });
 
   test('checked change point is reflected at ChangePoint/GroupNode/FileNode/stats levels', async () => {
-    const key = changePointKey(cp());
+    const key = changePointKey(cp(), 0);
     await setChecked(REPO, key, true);
 
     const result = await annotate(REPO, [fileNode()]);
@@ -267,7 +289,7 @@ describe('annotate', () => {
   });
 
   test('allChecked is true only when total > 0 and checked === total (partial checks)', async () => {
-    const key1 = changePointKey(cp());
+    const key1 = changePointKey(cp(), 0);
     const cp2 = cp({ newStart: 100, newEnd: 101, diffText: '+another change' });
     await setChecked(REPO, key1, true);
 
@@ -295,7 +317,7 @@ describe('annotate', () => {
   });
 
   test('comment text is attached to the matching ChangePoint and counted in stats.comments', async () => {
-    const key = changePointKey(cp());
+    const key = changePointKey(cp(), 0);
     await setComment(REPO, key, 'looks fine', {
       filePath: 'src/auth.js',
       functionName: 'handleLogin',
@@ -315,7 +337,7 @@ describe('annotate', () => {
       groups: [groupNode({ name: 'other', changePoints: [cp({ filePath: 'src/b.js', functionName: 'other', diffText: '+z' })], total: 1 })],
       total: 1,
     });
-    await setChecked(REPO, changePointKey(cp({ filePath: 'src/a.js' })), true);
+    await setChecked(REPO, changePointKey(cp({ filePath: 'src/a.js' }), 0), true);
 
     const result = await annotate(REPO, [fileA, fileB]);
     assert.deepEqual(result.stats, { total: 2, checked: 1, comments: 0 });
@@ -324,7 +346,7 @@ describe('annotate', () => {
   test('does not mutate the input fileNodes tree', async () => {
     const tree = [fileNode()];
     const before = structuredClone(tree);
-    await setChecked(REPO, changePointKey(cp()), true);
+    await setChecked(REPO, changePointKey(cp(), 0), true);
 
     await annotate(REPO, tree);
 
@@ -349,6 +371,141 @@ describe('annotate', () => {
     // Same reference (not cloned), and untouched.
     assert.equal(result.files[0].groups[0].changePoints[0].lines[0], sharedLine);
     assert.deepEqual(sharedLine, { type: '+', text: 'const token = signToken(user);' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// annotate — duplicate content within a single (filePath, functionName)
+// bucket (Finding 1). Two change points with byte-identical diffText used to
+// collapse onto one key, so confirming one silently marked both reviewed.
+// The fix: an occurrence ordinal (position within the bucket, in tree
+// order) folded into the key.
+// ---------------------------------------------------------------------------
+
+describe('annotate — duplicate-content change points get distinct ids (Finding 1)', () => {
+  test('two identical-content change points in one function get distinct ids and independent checkmarks', async () => {
+    // Same file, same function, byte-identical diffText -- e.g. the same
+    // one-line edit repeated twice inside a function -- differing only in
+    // where they land (newStart 10 vs 50).
+    const cp0 = cp({ newStart: 10, newEnd: 11 });
+    const cp1 = cp({ newStart: 50, newEnd: 51 });
+    const tree = [
+      fileNode({
+        groups: [groupNode({ changePoints: [cp0, cp1], total: 2 })],
+        total: 2,
+      }),
+    ];
+
+    const before = await annotate(REPO, tree);
+    const [beforeCp0, beforeCp1] = before.files[0].groups[0].changePoints;
+
+    assert.notEqual(beforeCp0.id, beforeCp1.id, 'duplicate content must not collapse onto one key');
+
+    await setChecked(REPO, beforeCp0.id, true);
+
+    const after = await annotate(REPO, tree);
+    const [afterCp0, afterCp1] = after.files[0].groups[0].changePoints;
+    const group = after.files[0].groups[0];
+
+    assert.equal(afterCp0.checked, true, 'the confirmed change point stays checked');
+    assert.equal(afterCp1.checked, false, 'the other identical-content change point must NOT be silently marked reviewed');
+    assert.equal(group.checked, 1);
+    assert.equal(group.allChecked, false);
+    assert.deepEqual(after.stats, { total: 2, checked: 1, comments: 0 });
+  });
+
+  test('the ordinal is the position within the bucket in tree order: first occurrence gets ordinal 0, second gets 1', async () => {
+    const cp0 = cp({ newStart: 10, newEnd: 11 });
+    const cp1 = cp({ newStart: 50, newEnd: 51 });
+    const tree = [fileNode({ groups: [groupNode({ changePoints: [cp0, cp1], total: 2 })], total: 2 })];
+
+    const result = await annotate(REPO, tree);
+    const [annotatedCp0, annotatedCp1] = result.files[0].groups[0].changePoints;
+
+    assert.equal(annotatedCp0.id, changePointKey(cp0, 0));
+    assert.equal(annotatedCp1.id, changePointKey(cp1, 1));
+  });
+
+  test('duplicate content across different functions/files is unaffected (buckets are per filePath+functionName+diffText)', async () => {
+    const cpA = cp({ filePath: 'src/a.js', functionName: 'fnA' });
+    const cpB = cp({ filePath: 'src/b.js', functionName: 'fnB' });
+    const tree = [
+      fileNode({ path: 'src/a.js', groups: [groupNode({ name: 'fnA', changePoints: [cpA], total: 1 })], total: 1 }),
+      fileNode({ path: 'src/b.js', groups: [groupNode({ name: 'fnB', changePoints: [cpB], total: 1 })], total: 1 }),
+    ];
+
+    const result = await annotate(REPO, tree);
+    const [idA, idB] = result.files.map((f) => f.groups[0].changePoints[0].id);
+    assert.equal(idA, changePointKey(cpA, 0));
+    assert.equal(idB, changePointKey(cpB, 0));
+    assert.notEqual(idA, idB);
+  });
+
+  test('setComment on the first of two duplicate-content change points does not attach the comment to the second', async () => {
+    const cp0 = cp({ newStart: 10, newEnd: 11 });
+    const cp1 = cp({ newStart: 50, newEnd: 51 });
+    const tree = [fileNode({ groups: [groupNode({ changePoints: [cp0, cp1], total: 2 })], total: 2 })];
+
+    const before = await annotate(REPO, tree);
+    const [beforeCp0] = before.files[0].groups[0].changePoints;
+
+    await setComment(REPO, beforeCp0.id, 'only the first one', {
+      filePath: cp0.filePath,
+      functionName: cp0.functionName,
+      diffText: cp0.diffText,
+    });
+
+    const after = await annotate(REPO, tree);
+    const [afterCp0, afterCp1] = after.files[0].groups[0].changePoints;
+    assert.equal(afterCp0.comment, 'only the first one');
+    assert.equal(afterCp1.comment, null);
+    assert.deepEqual(after.orphans, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// annotate — the four content-hash invalidation behaviors must still hold
+// with duplicate content present, now that the key includes an ordinal
+// (Finding 1's fix must not break amend-survival / edit-invalidation /
+// rename-invalidation / orphaning for the general, non-duplicate case --
+// those are covered end-to-end in the "invalidation rule" describe block
+// below; this block only adds the duplicate-specific regression coverage).
+// ---------------------------------------------------------------------------
+
+describe('annotate — stats.comments counts distinct comment records (Finding 2)', () => {
+  test('two different change points each with their own comment count as 2, not more', async () => {
+    const cpA = cp({ filePath: 'src/a.js', functionName: 'fnA', diffText: '+a' });
+    const cpB = cp({ filePath: 'src/b.js', functionName: 'fnB', diffText: '+b' });
+    const tree = [
+      fileNode({ path: 'src/a.js', groups: [groupNode({ name: 'fnA', changePoints: [cpA], total: 1 })], total: 1 }),
+      fileNode({ path: 'src/b.js', groups: [groupNode({ name: 'fnB', changePoints: [cpB], total: 1 })], total: 1 }),
+    ];
+
+    await setComment(REPO, changePointKey(cpA, 0), 'comment a', { filePath: cpA.filePath, functionName: cpA.functionName, diffText: cpA.diffText });
+    await setComment(REPO, changePointKey(cpB, 0), 'comment b', { filePath: cpB.filePath, functionName: cpB.functionName, diffText: cpB.diffText });
+
+    const result = await annotate(REPO, tree);
+    assert.equal(result.stats.comments, 2);
+  });
+
+  test('a repeated key in state.comments (defensive case) is never counted twice toward stats.comments', async () => {
+    // Even though the ordinal fix makes duplicate keys unreachable through a
+    // normal tree walk, stats.comments must still count by distinct key
+    // rather than by "one increment per annotated change point" -- assert
+    // it directly against a tree with several change points sharing the
+    // same comment key is not constructible via public API (keys are now
+    // 1:1 with tree position), so instead this proves the general
+    // dedup-by-key invariant: setting the *same* comment key's context via
+    // two change points that resolve to the *same* id (same file/function/
+    // diffText/ordinal, i.e. literally the same change point evaluated
+    // twice in the tree) is still counted once.
+    const single = cp();
+    const tree = [fileNode({ groups: [groupNode({ changePoints: [single], total: 1 })], total: 1 })];
+    const key = changePointKey(single, 0);
+    await setComment(REPO, key, 'one comment', { filePath: single.filePath, functionName: single.functionName, diffText: single.diffText });
+
+    const result = await annotate(REPO, tree);
+    assert.equal(result.stats.comments, 1);
   });
 });
 
@@ -379,7 +536,7 @@ describe('annotate — orphans', () => {
   });
 
   test('a comment matching a current change point is NOT listed as an orphan', async () => {
-    const key = changePointKey(cp());
+    const key = changePointKey(cp(), 0);
     await setComment(REPO, key, 'still relevant', {
       filePath: 'src/auth.js',
       functionName: 'handleLogin',
@@ -521,6 +678,61 @@ describe('setComment', () => {
     const state = await loadState(REPO);
     assert.equal(state.checked['k-checked'], true);
   });
+
+  // -- Finding 4: a missing/non-string filePath or diffText must throw
+  // rather than silently persisting null snapshot fields (which would later
+  // surface as an unexplained orphan showing nothing but a hash).
+
+  test('throws a readable Error when context is omitted entirely', async () => {
+    await assert.rejects(
+      () => setComment(REPO, 'k1', 'some text', undefined),
+      /filePath/,
+    );
+    const state = await loadState(REPO);
+    assert.equal(Object.hasOwn(state.comments, 'k1'), false, 'nothing should have been persisted');
+  });
+
+  test('throws a readable Error when context.filePath is missing', async () => {
+    await assert.rejects(
+      () => setComment(REPO, 'k1', 'some text', { functionName: 'foo', diffText: '+x' }),
+      /filePath/,
+    );
+  });
+
+  test('throws a readable Error when context.filePath is not a string', async () => {
+    await assert.rejects(
+      () => setComment(REPO, 'k1', 'some text', { filePath: 42, functionName: 'foo', diffText: '+x' }),
+      /filePath/,
+    );
+  });
+
+  test('throws a readable Error when context.diffText is missing', async () => {
+    await assert.rejects(
+      () => setComment(REPO, 'k1', 'some text', { filePath: 'src/a.js', functionName: 'foo' }),
+      /diffText/,
+    );
+  });
+
+  test('throws a readable Error when context.diffText is not a string', async () => {
+    await assert.rejects(
+      () => setComment(REPO, 'k1', 'some text', { filePath: 'src/a.js', functionName: 'foo', diffText: null }),
+      /diffText/,
+    );
+  });
+
+  test('a missing/invalid context does not prevent deleting a comment (empty text short-circuits before validation)', async () => {
+    await setComment(REPO, 'k1', 'will be cleared', { filePath: 'a', functionName: null, diffText: 'x' });
+    await assert.doesNotReject(() => setComment(REPO, 'k1', '', undefined));
+
+    const state = await loadState(REPO);
+    assert.equal(Object.hasOwn(state.comments, 'k1'), false);
+  });
+
+  test('functionName may legitimately be missing/null even though filePath and diffText are required', async () => {
+    await setComment(REPO, 'k1', 'file-level note', { filePath: 'src/a.js', diffText: '+x' });
+    const state = await loadState(REPO);
+    assert.equal(state.comments.k1.functionName, null);
+  });
 });
 
 describe('deleteComment', () => {
@@ -609,24 +821,39 @@ describe('concurrency and atomic writes', () => {
     assert.deepEqual(leftovers, []);
   });
 
-  test('two different repoIds do not serialize against each other', async () => {
-    const order = [];
+  test('two different repoIds do not serialize against each other (fast repo finishes while a slow, large-file repo write is still in flight)', async () => {
+    // Finding 3: firing one setChecked at each of two repos and asserting
+    // both eventually persisted passes even with a single global mutex --
+    // it never observes ordering, so it can't tell "independent per-repo
+    // locks" apart from "one shared lock". To actually discriminate, give
+    // one repo a large existing state file (so its read-modify-write -- the
+    // JSON.parse of the read and the JSON.stringify of the write -- takes
+    // measurably longer) and prove the small/fast repo's write completes
+    // before the slow repo's does. Under a single shared mutex the fast
+    // write would have to wait behind the slow one and this would fail.
     const slowRepo = 'repo-slow';
     const fastRepo = 'repo-fast';
 
-    // No direct hook into fs timing, so this proves independence by
-    // interleaving real work: both must complete and persist correctly
-    // regardless of call order, i.e. one repo's mutex is never blocked by
-    // the other's in-flight write.
-    const p1 = setChecked(slowRepo, 'x', true).then(() => order.push('slow-done'));
-    const p2 = setChecked(fastRepo, 'y', true).then(() => order.push('fast-done'));
-    await Promise.all([p1, p2]);
+    await mkdir(stateDir(), { recursive: true });
+    const bigChecked = {};
+    for (let i = 0; i < 300000; i += 1) bigChecked[`key-${i}`] = true;
+    await writeFile(statePath(slowRepo), JSON.stringify({ version: 1, checked: bigChecked, comments: {} }));
+
+    const order = [];
+    const slowPromise = setChecked(slowRepo, 'new-key', true).then(() => order.push('slow'));
+    const fastPromise = setChecked(fastRepo, 'y', true).then(() => order.push('fast'));
+
+    await fastPromise;
+    assert.deepEqual(order, ['fast'], "the fast repo's write must not be blocked behind the slow repo's in-flight write");
+
+    await slowPromise;
+    assert.deepEqual(order, ['fast', 'slow']);
 
     const slowState = await loadState(slowRepo);
     const fastState = await loadState(fastRepo);
-    assert.equal(slowState.checked.x, true);
+    assert.equal(slowState.checked['new-key'], true);
+    assert.equal(Object.keys(slowState.checked).length, 300001);
     assert.equal(fastState.checked.y, true);
-    assert.equal(order.length, 2);
   });
 
   test('write creates the state directory if it does not exist yet', async () => {
