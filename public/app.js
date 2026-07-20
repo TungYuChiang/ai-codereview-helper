@@ -35,6 +35,10 @@ const treeRootEl = document.getElementById('tree-root');
 const mainPaneEl = document.getElementById('main-pane');
 const changepointsRootEl = document.getElementById('changepoints-root');
 
+const appEl = document.getElementById('app');
+const topbarEl = document.getElementById('topbar');
+const bodyEl = document.getElementById('body');
+
 // ===========================================================================
 // EXTENSION POINT 2 -- central app state.
 //
@@ -56,13 +60,23 @@ const appState = {
   order: [],            // flattened change-point ids, in tree/scroll order
   currentKey: null,     // id of the currently selected/highlighted change point
   collapsed: new Set(), // collapsed tree node ids, e.g. "file:foo.js", "group:foo.js::g0"
+
+  // EXTENSION POINT 5 -- "is editing" flag, for the keyboard-shortcut unit.
+  // isEditing is true whenever a comment textarea is open (add or edit).
+  // The keyboard-navigation unit's document-level keydown handler for
+  // j/k/x/u/c/f MUST check `appState.isEditing` first and bail out while
+  // it's true, or single-key shortcuts will fire while the user is typing
+  // a comment. editingKey names which change point is being edited (or
+  // null); isEditing is the boolean the next unit should actually check.
+  isEditing: false,
+  editingKey: null,
 };
 
 // DOM index rebuilt every time the tree is (re)rendered. Not part of
 // appState because it holds live element references, not serializable
 // application state.
 const dom = {
-  changePoints: new Map(), // key -> { changePoint, group, file, groupKey, leftRow, leftCheckbox, rightContainer, rightCheckbox, contentEl }
+  changePoints: new Map(), // key -> { changePoint, group, file, groupKey, leftRow, leftCheckbox, rightContainer, rightCheckbox, contentEl, commentEl }
   groups: new Map(),       // groupKey -> { group, badgeEl, progressFillEl, toggleBtn, childUl }
   files: new Map(),        // path -> { file, badgeEl, progressFillEl, toggleBtn, childUl }
 };
@@ -122,6 +136,22 @@ const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repo: repoId, key, checked }),
     }),
+  setComment: (repoId, key, text, context) =>
+    apiFetch('/api/comment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repoId, key, text, context }),
+    }),
+  discardOrphan: (repoId, key) =>
+    apiFetch('/api/orphan/discard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repoId, key }),
+    }),
+  exportReview: (repoId, base, target, format) =>
+    apiFetch(
+      `/api/export?repo=${encodeURIComponent(repoId)}&base=${encodeURIComponent(base)}&target=${encodeURIComponent(target)}&format=${encodeURIComponent(format)}`,
+    ).then((b) => b.text),
 };
 
 // ===========================================================================
@@ -423,6 +453,11 @@ function renderTree() {
   dom.files.clear();
   appState.order = [];
 
+  // A fresh tree means every previous DOM node (including any open comment
+  // textarea) is about to be discarded, so any in-progress edit is over too.
+  appState.isEditing = false;
+  appState.editingKey = null;
+
   treeRootEl.textContent = '';
   changepointsRootEl.textContent = '';
 
@@ -432,6 +467,8 @@ function renderTree() {
 
   updateStatsDom();
   setupScrollSpy();
+  renderAllComments();
+  renderOrphans();
 }
 
 // Splits a file path into "dir/" (muted) + "name" (foreground) so a single
@@ -956,6 +993,363 @@ function handleIntersections(entries) {
   visible.sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
   const key = visible[0].target.dataset.key;
   if (key) selectChangePoint(key, { scroll: false });
+}
+
+// ===========================================================================
+// EXTENSION POINT 4 continued -- comment UI, attached to every change point
+// via its container's data-key (set by renderChangePoint above). Called
+// once per tree render (see renderTree), after every change point exists,
+// so it never has to guess at DOM ordering.
+//
+// A comment section has two mutually exclusive render states:
+//   - view mode: existing comment text (or an "add comment" affordance)
+//   - edit mode: a textarea, Esc to cancel / Cmd|Ctrl+Enter to save
+//
+// Saving always goes through POST /api/comment and updates the in-memory
+// changePoint + DOM in place -- no refetch of the tree (see saveComment).
+// ===========================================================================
+
+function renderAllComments() {
+  for (const entry of dom.changePoints.values()) {
+    if (!entry.commentEl) {
+      const section = createEl('div', { className: 'comment-section' });
+      entry.rightContainer.appendChild(section);
+      entry.commentEl = section;
+    }
+    renderCommentView(entry);
+  }
+}
+
+// View mode: shows the saved comment (via textContent only -- comment text
+// comes from the reviewed repo's own diff plus whatever the user typed, and
+// must never be interpreted as markup) plus Edit/Delete, or an "add
+// comment" button when there is none yet.
+function renderCommentView(entry, { focusTrigger = false } = {}) {
+  const { commentEl, changePoint } = entry;
+  commentEl.textContent = '';
+
+  if (changePoint.comment) {
+    const body = createEl('div', { className: 'comment-body' });
+    body.appendChild(createEl('span', { className: 'comment-label', text: 'Comment' }));
+    body.appendChild(createEl('p', { className: 'comment-text', text: changePoint.comment }));
+
+    const actions = createEl('div', { className: 'comment-actions' });
+    const editBtn = createEl('button', { className: 'comment-btn', text: 'Edit' });
+    editBtn.type = 'button';
+    editBtn.addEventListener('click', () => enterCommentEdit(entry));
+    const deleteBtn = createEl('button', { className: 'comment-btn comment-btn-danger', text: 'Delete' });
+    deleteBtn.type = 'button';
+    deleteBtn.addEventListener('click', () => saveComment(entry, ''));
+    actions.append(editBtn, deleteBtn);
+    body.appendChild(actions);
+
+    commentEl.appendChild(body);
+    if (focusTrigger) editBtn.focus();
+  } else {
+    const addBtn = createEl('button', { className: 'comment-btn comment-add-btn', text: '+ Comment' });
+    addBtn.type = 'button';
+    addBtn.addEventListener('click', () => enterCommentEdit(entry));
+    commentEl.appendChild(addBtn);
+    if (focusTrigger) addBtn.focus();
+  }
+}
+
+// Edit mode. Sets appState.isEditing -- see EXTENSION POINT 5 at the
+// appState declaration -- for the whole time the textarea exists.
+function enterCommentEdit(entry) {
+  // Only one change point can be in edit mode at a time, so editingKey is
+  // always an accurate answer to "which one" -- opening a second editor
+  // auto-cancels the first (same as Esc: discards unsaved text).
+  if (appState.editingKey && appState.editingKey !== entry.changePoint.id) {
+    const other = dom.changePoints.get(appState.editingKey);
+    if (other) renderCommentView(other);
+  }
+
+  appState.isEditing = true;
+  appState.editingKey = entry.changePoint.id;
+
+  const { commentEl, changePoint } = entry;
+  commentEl.textContent = '';
+
+  const textarea = document.createElement('textarea');
+  textarea.className = 'comment-textarea';
+  textarea.value = changePoint.comment || '';
+  textarea.rows = 4;
+  textarea.setAttribute('aria-label', 'comment text');
+
+  const hint = createEl('div', {
+    className: 'comment-hint',
+    text: 'Esc cancel  ·  ⌘/Ctrl+Enter save  ·  clear + save = delete',
+  });
+
+  const actions = createEl('div', { className: 'comment-actions' });
+  const saveBtn = createEl('button', { className: 'comment-btn comment-btn-primary', text: 'Save' });
+  saveBtn.type = 'button';
+  saveBtn.addEventListener('click', () => saveComment(entry, textarea.value));
+  const cancelBtn = createEl('button', { className: 'comment-btn', text: 'Cancel' });
+  cancelBtn.type = 'button';
+  cancelBtn.addEventListener('click', () => exitCommentEdit(entry));
+  actions.append(saveBtn, cancelBtn);
+
+  // Stop every keyboard event from leaving the textarea: this is the other
+  // half of EXTENSION POINT 5 -- even before the next unit's shortcut
+  // handler exists, nothing typed here should ever be treated as anything
+  // but text.
+  const stop = (e) => e.stopPropagation();
+  textarea.addEventListener('keyup', stop);
+  textarea.addEventListener('keypress', stop);
+  textarea.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      exitCommentEdit(entry);
+    } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      saveComment(entry, textarea.value);
+    }
+    stop(e);
+  });
+
+  commentEl.append(textarea, hint, actions);
+  textarea.focus();
+  textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+}
+
+function exitCommentEdit(entry) {
+  appState.isEditing = false;
+  appState.editingKey = null;
+  renderCommentView(entry, { focusTrigger: true });
+}
+
+// Saves via POST /api/comment (server treats empty/whitespace-only text as
+// delete -- see state.js setComment), then updates changePoint.comment and
+// re-renders just this one comment section in place. Never refetches
+// GET /api/diff, per the brief ("存檔後就地更新畫面，不要整棵樹重抓").
+async function saveComment(entry, text) {
+  clearError();
+  const { changePoint } = entry;
+  const context = {
+    filePath: changePoint.filePath,
+    functionName: changePoint.functionName,
+    diffText: changePoint.diffText,
+  };
+
+  try {
+    await api.setComment(appState.repo, changePoint.id, text, context);
+  } catch (err) {
+    showError(err.message);
+    return; // stay in edit mode -- the user's text is still in the textarea
+  }
+
+  const hadCommentBefore = changePoint.comment != null;
+  const isEmpty = typeof text !== 'string' || text.trim() === '';
+  changePoint.comment = isEmpty ? null : text;
+  const hasCommentAfter = changePoint.comment != null;
+
+  if (appState.tree && appState.tree.stats) {
+    if (hadCommentBefore && !hasCommentAfter) appState.tree.stats.comments -= 1;
+    if (!hadCommentBefore && hasCommentAfter) appState.tree.stats.comments += 1;
+  }
+
+  appState.isEditing = false;
+  appState.editingKey = null;
+  renderCommentView(entry, { focusTrigger: true });
+}
+
+// ===========================================================================
+// Orphan comments -- change points whose underlying diff no longer exists
+// (GET /api/diff's `orphans` array; see state.js buildAnnotated). Never
+// silently dropped: shown in their own section with the filePath /
+// functionName / diffText snapshot the comment was originally attached to,
+// entirely via textContent (that snapshot is reviewed-repo content and must
+// never be treated as markup). "Keep" needs no API call -- not touching an
+// orphan *is* keeping it; only "discard" hits the network.
+// ===========================================================================
+
+let orphansRootEl = null;
+
+function ensureOrphansRootEl() {
+  if (orphansRootEl) return orphansRootEl;
+  orphansRootEl = createEl('section', { className: 'orphans-section' });
+  orphansRootEl.id = 'orphans-root';
+  orphansRootEl.hidden = true;
+  // Appended after changepointsRootEl (its only sibling inside main-pane),
+  // so orphans read as an appendix at the end of the primary review flow
+  // rather than something the user has to scroll past first.
+  mainPaneEl.appendChild(orphansRootEl);
+  return orphansRootEl;
+}
+
+function renderOrphans() {
+  const root = ensureOrphansRootEl();
+  root.textContent = '';
+
+  const orphans = (appState.tree && appState.tree.orphans) || [];
+  if (orphans.length === 0) {
+    root.hidden = true;
+    return;
+  }
+  root.hidden = false;
+
+  root.appendChild(
+    createEl('h2', { className: 'orphans-heading', text: `Orphaned comments (${orphans.length})` }),
+  );
+  root.appendChild(
+    createEl('p', {
+      className: 'orphans-note',
+      text:
+        'These change points no longer exist in the current diff -- the code was edited or removed. ' +
+        'Leaving an entry alone keeps it; only "Discard" deletes it.',
+    }),
+  );
+
+  for (const orphan of orphans) {
+    root.appendChild(buildOrphanCard(orphan));
+  }
+}
+
+function buildOrphanCard(orphan) {
+  const card = createEl('div', { className: 'orphan-card' });
+  card.dataset.key = orphan.key;
+
+  const meta = createEl('div', { className: 'orphan-meta' });
+  meta.appendChild(createEl('span', { className: 'orphan-file', text: orphan.filePath || '(unknown file)' }));
+  if (orphan.functionName) {
+    meta.appendChild(createEl('span', { className: 'orphan-fn', text: orphan.functionName }));
+  }
+  card.appendChild(meta);
+
+  const diffPre = createEl('pre', { className: 'orphan-diff' });
+  diffPre.textContent = orphan.diffText || '';
+  card.appendChild(diffPre);
+
+  card.appendChild(createEl('p', { className: 'orphan-comment', text: orphan.text }));
+
+  const actions = createEl('div', { className: 'orphan-actions' });
+  const discardBtn = createEl('button', { className: 'comment-btn comment-btn-danger', text: 'Discard' });
+  discardBtn.type = 'button';
+  discardBtn.addEventListener('click', () => discardOrphan(orphan.key, card));
+  actions.append(discardBtn, createEl('span', { className: 'orphan-keep-hint', text: 'leave it alone to keep it' }));
+  card.appendChild(actions);
+
+  return card;
+}
+
+async function discardOrphan(key, cardEl) {
+  clearError();
+  try {
+    await api.discardOrphan(appState.repo, key);
+  } catch (err) {
+    showError(err.message);
+    return;
+  }
+  if (appState.tree) {
+    appState.tree.orphans = appState.tree.orphans.filter((o) => o.key !== key);
+  }
+  cardEl.remove();
+  if (orphansRootEl && (!appState.tree || appState.tree.orphans.length === 0)) {
+    orphansRootEl.hidden = true;
+  }
+}
+
+// ===========================================================================
+// Export -- two clipboard-only exports (never writes a file). Buttons live
+// in the top bar, appended after the stats badge (whose margin-left: auto
+// already pushes everything from that point on to the right edge -- see
+// style.css). navigator.clipboard.writeText() is tried first; if it throws
+// (permission denied, insecure context, or simply unavailable) a fallback
+// panel with a select-all-able textarea is shown instead, with the reason.
+// ===========================================================================
+
+const exportGroupEl = createEl('div', { className: 'topbar-group export-group' });
+const exportClaudeBtnEl = createEl('button', { className: 'export-btn', text: '匯出我的疑問（Claude）' });
+exportClaudeBtnEl.type = 'button';
+const exportMarkdownBtnEl = createEl('button', { className: 'export-btn', text: '匯出筆記（Markdown）' });
+exportMarkdownBtnEl.type = 'button';
+exportGroupEl.append(exportClaudeBtnEl, exportMarkdownBtnEl);
+topbarEl.appendChild(exportGroupEl);
+
+exportClaudeBtnEl.addEventListener('click', () => handleExportClick('claude', exportClaudeBtnEl));
+exportMarkdownBtnEl.addEventListener('click', () => handleExportClick('markdown', exportMarkdownBtnEl));
+
+async function handleExportClick(format, btnEl) {
+  if (!appState.repo || !appState.base || !appState.target) return;
+  clearError();
+
+  let text;
+  try {
+    text = await api.exportReview(appState.repo, appState.base, appState.target, format);
+  } catch (err) {
+    showError(err.message);
+    return;
+  }
+
+  await copyToClipboardWithFeedback(text, btnEl);
+}
+
+async function copyToClipboardWithFeedback(text, btnEl) {
+  const originalText = btnEl.textContent;
+  try {
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+      throw new Error('clipboard API not available in this browser context');
+    }
+    await navigator.clipboard.writeText(text);
+    hideClipboardFallback();
+    btnEl.textContent = '已複製';
+    btnEl.classList.add('copied');
+    btnEl.disabled = true;
+    setTimeout(() => {
+      btnEl.textContent = originalText;
+      btnEl.classList.remove('copied');
+      btnEl.disabled = false;
+    }, 1600);
+  } catch (err) {
+    showClipboardFallback(text, err);
+  }
+}
+
+let clipboardFallbackEl = null;
+
+function ensureClipboardFallbackEl() {
+  if (clipboardFallbackEl) return clipboardFallbackEl;
+  clipboardFallbackEl = createEl('div', { className: 'clipboard-fallback' });
+  clipboardFallbackEl.hidden = true;
+  // Same band as #error-banner -- inserted right before #body so it reads
+  // as a persistent, full-width notice rather than a floating overlay.
+  appEl.insertBefore(clipboardFallbackEl, bodyEl);
+  return clipboardFallbackEl;
+}
+
+function showClipboardFallback(text, err) {
+  const el = ensureClipboardFallbackEl();
+  el.textContent = '';
+  el.hidden = false;
+
+  const reason = err && err.message ? err.message : 'clipboard access was blocked';
+  el.appendChild(
+    createEl('p', {
+      className: 'clipboard-fallback-reason',
+      text: `Couldn't copy to the clipboard automatically (${reason}). Select all and copy manually:`,
+    }),
+  );
+
+  const textarea = document.createElement('textarea');
+  textarea.className = 'clipboard-fallback-textarea';
+  textarea.readOnly = true;
+  textarea.rows = 8;
+  textarea.value = text;
+  el.appendChild(textarea);
+
+  const closeBtn = createEl('button', { className: 'comment-btn', text: 'Close' });
+  closeBtn.type = 'button';
+  closeBtn.addEventListener('click', hideClipboardFallback);
+  el.appendChild(closeBtn);
+
+  textarea.focus();
+  textarea.select();
+}
+
+function hideClipboardFallback() {
+  if (clipboardFallbackEl) clipboardFallbackEl.hidden = true;
 }
 
 // ===========================================================================

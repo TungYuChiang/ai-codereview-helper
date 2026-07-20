@@ -299,6 +299,18 @@ body {
   border: 1px solid var(--color-border-strong);
 }
 
+/* Export buttons -- appended after .stats-badge in the DOM (app.js), so its
+ * margin-left: auto above already pushes this group to the far right too;
+ * no extra margin needed here, #topbar's own `gap` handles the spacing. */
+.export-btn {
+  font-size: 11.5px;
+}
+
+.export-btn.copied {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
 /* ---------------------------------------------------------------------- */
 /* Native controls -- select + checkbox, restyled per addendum            */
 /* ---------------------------------------------------------------------- */
@@ -373,6 +385,25 @@ button:hover {
   color: var(--color-fg);
 }
 
+/* Native textarea -- same treatment as input[type="text"] (addendum: native
+ * controls render as OS-light boxes on a dark page unless repainted). Used
+ * by both the comment editor and the clipboard-copy fallback below. */
+textarea {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--color-fg);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  padding: 4px 8px;
+  resize: vertical;
+  transition: border-color var(--transition-fast);
+}
+
+textarea:focus-visible {
+  border-color: var(--color-accent);
+}
+
 input[type="checkbox"] {
   appearance: none;
   -webkit-appearance: none;
@@ -420,6 +451,37 @@ input[type="checkbox"]:checked::after {
   border-bottom: 1px solid var(--color-destructive);
   padding: 6px 12px;
   font-size: 12.5px;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Clipboard-copy fallback -- same band treatment as .error-banner above,  */
+/* shown when navigator.clipboard.writeText() throws (permission denied,   */
+/* insecure context, or unavailable). Amber/note token, not destructive:   */
+/* this isn't an error in the app, just a browser restriction.             */
+/* ---------------------------------------------------------------------- */
+
+.clipboard-fallback {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--color-note-wash);
+  border-bottom: 1px solid var(--color-note);
+  padding: 8px 12px;
+}
+
+.clipboard-fallback[hidden] {
+  display: none;
+}
+
+.clipboard-fallback-reason {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--color-fg-dim);
+}
+
+.clipboard-fallback-textarea {
+  width: 100%;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -834,6 +896,167 @@ input[type="checkbox"]:checked::after {
 .diff-code .token.comment {
   color: var(--code-comment);
   font-style: italic;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Comment UI -- add/edit/delete a comment on a change point. Amber/note   */
+/* token throughout (--color-note is documented as "comments / attention",*/
+/* deliberately distinct from the green accent used for read/progress).   */
+/* ---------------------------------------------------------------------- */
+
+.comment-section {
+  padding: 8px 10px;
+  border-top: 1px solid var(--color-border);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+}
+
+.comment-add-btn {
+  color: var(--color-note);
+}
+
+.comment-add-btn:hover {
+  border-color: var(--color-note);
+  color: var(--color-note);
+}
+
+.comment-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.comment-label {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-note);
+}
+
+.comment-text {
+  margin: 0;
+  color: var(--color-fg-dim);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.comment-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.comment-btn {
+  font-size: 11.5px;
+  padding: 3px 8px;
+}
+
+.comment-btn-primary {
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  border-color: var(--color-accent);
+}
+
+.comment-btn-danger:hover {
+  border-color: var(--color-destructive);
+  color: var(--color-destructive);
+}
+
+.comment-hint {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-fg-faint);
+}
+
+.comment-textarea {
+  width: 100%;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Orphan comments -- change points whose code no longer exists in the     */
+/* current diff. Kept clearly separate from the main review flow, always   */
+/* shown with their filePath/functionName/diffText snapshot, hidden        */
+/* entirely (not just emptied) when there are none.                        */
+/* ---------------------------------------------------------------------- */
+
+.orphans-section {
+  margin: 6px 12px 12px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-note);
+  border-radius: 6px;
+  background: var(--color-note-wash);
+}
+
+.orphans-section[hidden] {
+  display: none;
+}
+
+.orphans-heading {
+  margin: 0 0 4px 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-note);
+}
+
+.orphans-note {
+  margin: 0 0 10px 0;
+  font-size: 12px;
+  color: var(--color-fg-dim);
+}
+
+.orphan-card {
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+
+.orphan-card:last-child {
+  margin-bottom: 0;
+}
+
+.orphan-meta {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-fg-muted);
+}
+
+.orphan-fn {
+  color: var(--color-fg-dim);
+}
+
+.orphan-diff {
+  margin: 0 0 6px 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--color-track);
+  color: var(--code-fg);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.orphan-comment {
+  margin: 0 0 8px 0;
+  color: var(--color-fg-dim);
+  white-space: pre-wrap;
+}
+
+.orphan-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.orphan-keep-hint {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--color-fg-faint);
 }
 
 /* ---------------------------------------------------------------------- */
