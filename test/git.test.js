@@ -441,3 +441,80 @@ describe('getFileContent', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Option-injection hardening.
+//
+// getDiff/getFileContent interpolate caller-supplied refs into a git command
+// line. server.js validates refs before they get here, but this layer must
+// stand on its own: a ref that looks like an option must never be *parsed* as
+// one, no matter what the caller did or failed to do.
+// ---------------------------------------------------------------------------
+
+describe('option injection hardening', () => {
+  async function assertNoFileWritten(probe) {
+    await assert.rejects(
+      () => import('node:fs/promises').then((fs) => fs.access(probe)),
+      'git executed an injected option and wrote a file',
+    );
+  }
+
+  test('getDiff cannot be tricked into treating a base ref as an option', async () => {
+    const repo = await makeTempRepo();
+    const probe = join(tmpdir(), `lcr-git-pwned-diff-${process.pid}-${Date.now()}.txt`);
+    try {
+      await writeFile(join(repo, 'file.txt'), 'content\n');
+      await git(repo, ['add', 'file.txt']);
+      await git(repo, ['commit', '-q', '-m', 'add file']);
+
+      await assert.rejects(() => getDiff(repo, `--output=${probe}`, null));
+      await assertNoFileWritten(probe);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('getDiff cannot be tricked via the target ref either', async () => {
+    const repo = await makeTempRepo();
+    const probe = join(tmpdir(), `lcr-git-pwned-target-${process.pid}-${Date.now()}.txt`);
+    try {
+      await assert.rejects(() => getDiff(repo, 'HEAD', `--output=${probe}`));
+      await assertNoFileWritten(probe);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('getFileContent cannot be tricked into treating a ref as an option', async () => {
+    const repo = await makeTempRepo();
+    const probe = join(tmpdir(), `lcr-git-pwned-show-${process.pid}-${Date.now()}.txt`);
+    try {
+      await writeFile(join(repo, 'file.txt'), 'content\n');
+      await git(repo, ['add', 'file.txt']);
+      await git(repo, ['commit', '-q', '-m', 'add file']);
+
+      await assert.rejects(() => getFileContent(repo, `--output=${probe}`, 'file.txt'));
+      await assertNoFileWritten(probe);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('the readable error message still names the git invocation, without the guards', async () => {
+    const repo = await makeTempRepo();
+    try {
+      await assert.rejects(
+        () => getDiff(repo, 'no-such-ref', 'also-missing'),
+        (err) => {
+          // The `--end-of-options` / `--` guards are implementation detail and
+          // must not leak into the message the user sees.
+          assert.doesNotMatch(err.message, /--end-of-options/);
+          assert.match(err.message, /^git diff no-such-ref\.\.\.also-missing failed:/);
+          return true;
+        },
+      );
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+});

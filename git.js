@@ -9,6 +9,23 @@ import { join } from 'node:path';
 
 const MAX_BUFFER = 1024 * 1024 * 100; // 100MB，避免大 diff 被截斷
 
+// `--end-of-options` 告訴 git：後面的參數一律不是選項。少了它，一個以 `-`
+// 開頭的 ref（例如 `--output=/tmp/x`）會被 git 當成選項解析 —— 那就是任意
+// 檔案寫入。呼叫端已經先擋掉這種 ref，這裡是第二層防線：即使驗證被繞過，
+// git 也不可能把 ref 讀成選項。
+const END_OF_OPTIONS = '--end-of-options';
+// diff 的路徑分隔符：`--` 之後只會是 pathspec，ref 不可能溢出到路徑位置。
+const PATHSPEC_SEPARATOR = '--';
+
+/**
+ * 組錯誤訊息用的參數列表。上面那兩個分隔符純粹是防護用的實作細節，
+ * 讓它們出現在錯誤訊息裡只會讓使用者困惑，也會讓「訊息要指名失敗的 git
+ * 呼叫」這個契約變得難讀，所以顯示時濾掉。
+ */
+function describeArgs(args) {
+  return args.filter((arg) => arg !== END_OF_OPTIONS && arg !== PATHSPEC_SEPARATOR);
+}
+
 /**
  * 執行 git 指令，回傳 stdout。失敗時拋出帶可讀訊息的 Error。
  */
@@ -17,7 +34,7 @@ function runGit(repoPath, args) {
     execFile('git', args, { cwd: repoPath, maxBuffer: MAX_BUFFER }, (err, stdout, stderr) => {
       if (err) {
         const detail = (stderr && stderr.toString().trim()) || err.message;
-        reject(new Error(`git ${args.join(' ')} failed: ${detail}`));
+        reject(new Error(`git ${describeArgs(args).join(' ')} failed: ${detail}`));
         return;
       }
       resolve(stdout.toString());
@@ -61,11 +78,9 @@ function splitLines(output) {
  * @returns {Promise<string>}
  */
 export async function getDiff(repoPath, base, target) {
-  const args =
-    target === null || target === 'WORKING_TREE'
-      ? ['diff', base]
-      : ['diff', `${base}...${target}`];
-  return runGit(repoPath, args);
+  const revision =
+    target === null || target === 'WORKING_TREE' ? base : `${base}...${target}`;
+  return runGit(repoPath, ['diff', END_OF_OPTIONS, revision, PATHSPEC_SEPARATOR]);
 }
 
 /**
@@ -88,7 +103,9 @@ export async function getFileContent(repoPath, ref, filePath) {
   }
 
   try {
-    return await runGit(repoPath, ['show', `${ref}:${filePath}`]);
+    // `git show` 不吃 `--` 分隔符（`git show -- <rev>:<path>` 會被當成
+    // pathspec 而回傳空字串），所以這裡只用 `--end-of-options`。
+    return await runGit(repoPath, ['show', END_OF_OPTIONS, `${ref}:${filePath}`]);
   } catch (err) {
     // git show 對「檔案不存在於該 ref」會用特定的 stderr 訊息表示：
     //   fatal: path '<p>' does not exist in '<ref>'

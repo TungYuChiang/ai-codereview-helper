@@ -1,10 +1,11 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import net from 'node:net';
 
 import { createServer } from '../server.js';
 
@@ -67,6 +68,48 @@ async function trackedTempRepo(label) {
   return dir;
 }
 
+/**
+ * Sends a request over a raw TCP socket so the request target reaches the
+ * server exactly as written. `fetch` normalises paths like `/../server.js`
+ * before they leave the client, so a traversal assertion made through
+ * `fetch` never actually tests the server -- this does.
+ */
+function rawRequest(requestTarget, { method = 'GET', headers = {}, body = null } = {}) {
+  const { port } = server.address();
+  return new Promise((resolvePromise, rejectPromise) => {
+    const socket = net.connect(port, '127.0.0.1', () => {
+      const lines = [
+        `${method} ${requestTarget} HTTP/1.1`,
+        `Host: 127.0.0.1:${port}`,
+        'Connection: close',
+      ];
+      for (const [name, value] of Object.entries(headers)) lines.push(`${name}: ${value}`);
+      if (body !== null) lines.push(`Content-Length: ${Buffer.byteLength(body)}`);
+      socket.write(`${lines.join('\r\n')}\r\n\r\n${body ?? ''}`);
+    });
+
+    let data = '';
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk) => {
+      data += chunk;
+    });
+    socket.on('end', () => {
+      const match = /^HTTP\/1\.\d (\d{3})/.exec(data);
+      resolvePromise({ status: match ? Number(match[1]) : null, raw: data });
+    });
+    socket.on('error', rejectPromise);
+  });
+}
+
+async function fileExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // createServer() basics
 // ---------------------------------------------------------------------------
@@ -101,14 +144,31 @@ describe('static file serving', () => {
     assert.equal(res.status, 404);
   });
 
-  test('path traversal outside public/ is rejected, not served', async () => {
-    const res = await fetch(`${baseUrl}/../server.js`);
-    assert.notEqual(res.status, 200);
+  // NOTE: these go over a raw socket on purpose. `fetch('/../server.js')`
+  // normalises the path client-side, so the server never sees a traversal and
+  // the assertion proves nothing.
+  test('raw-socket path traversal outside public/ returns exactly 404', async () => {
+    const res = await rawRequest('/../server.js');
+    assert.equal(res.status, 404);
+    assert.doesNotMatch(res.raw, /createServer/);
   });
 
-  test('encoded path traversal outside public/ is rejected', async () => {
+  test('raw-socket deep traversal to an absolute path returns exactly 404', async () => {
+    const res = await rawRequest('/../../../../etc/passwd');
+    assert.equal(res.status, 404);
+    assert.doesNotMatch(res.raw, /root:/);
+  });
+
+  test('encoded path traversal outside public/ returns exactly 404', async () => {
     const res = await fetch(`${baseUrl}/..%2Fserver.js`);
-    assert.notEqual(res.status, 200);
+    assert.equal(res.status, 404);
+    assert.doesNotMatch(await res.text(), /createServer/);
+  });
+
+  test('double-encoded traversal returns exactly 404', async () => {
+    const res = await rawRequest('/%2e%2e%2fserver.js');
+    assert.equal(res.status, 404);
+    assert.doesNotMatch(res.raw, /createServer/);
   });
 });
 
@@ -608,5 +668,356 @@ describe('error handling', () => {
     assert.equal(res.status, 404);
     const body = await res.json();
     assert.ok(body.error);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Argument injection via ref parameters (Critical)
+//
+// `base` and `target` are interpolated into a git command line. A value that
+// starts with `-` used to be parsed by git as an *option*, so
+// `base=--output=/tmp/x` made git write an arbitrary file. Refs must be
+// rejected at the edge, and git must never be able to read one as an option.
+// ---------------------------------------------------------------------------
+
+describe('ref argument injection', () => {
+  test('base=--output=... is rejected with 400 and writes no file', async () => {
+    const repoPath = await trackedTempRepo('inject-output');
+    const repo = await registerRepo(baseUrl, repoPath);
+    const probe = join(tmpdir(), `lcr-PWNED-${process.pid}-${Date.now()}.txt`);
+
+    const res = await fetch(
+      `${baseUrl}/api/diff?repo=${repo.id}&base=${encodeURIComponent(`--output=${probe}`)}`,
+    );
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.match(body.error, /base/);
+    assert.equal(await fileExists(probe), false, `git wrote ${probe} -- injection still works`);
+  });
+
+  test('the same injection through /api/export is rejected with 400', async () => {
+    const repoPath = await trackedTempRepo('inject-export');
+    const repo = await registerRepo(baseUrl, repoPath);
+    const probe = join(tmpdir(), `lcr-PWNED-export-${process.pid}-${Date.now()}.txt`);
+
+    const res = await fetch(
+      `${baseUrl}/api/export?repo=${repo.id}` +
+        `&base=${encodeURIComponent(`--output=${probe}`)}&format=markdown`,
+    );
+    assert.equal(res.status, 400);
+    assert.equal(await fileExists(probe), false);
+  });
+
+  test('target starting with a dash is rejected with 400', async () => {
+    const repoPath = await trackedTempRepo('inject-target');
+    const repo = await registerRepo(baseUrl, repoPath);
+    const probe = join(tmpdir(), `lcr-PWNED-target-${process.pid}-${Date.now()}.txt`);
+
+    const res = await fetch(
+      `${baseUrl}/api/diff?repo=${repo.id}&base=HEAD` +
+        `&target=${encodeURIComponent(`--output=${probe}`)}`,
+    );
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.match(body.error, /target/);
+    assert.equal(await fileExists(probe), false);
+  });
+
+  test('refs containing a colon or whitespace are rejected with 400', async () => {
+    const repoPath = await trackedTempRepo('inject-colon');
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    for (const bad of ['HEAD:../../etc/passwd', 'HEAD foo', 'HEAD\nfoo']) {
+      const res = await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${encodeURIComponent(bad)}`);
+      assert.equal(res.status, 400, `expected 400 for base=${JSON.stringify(bad)}`);
+    }
+  });
+
+  test('legitimate ref shapes are still accepted', async () => {
+    const repoPath = await trackedTempRepo('ref-shapes');
+    await writeFile(join(repoPath, 'foo.js'), 'let x = 1;\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add foo']);
+    await git(repoPath, ['branch', 'feat/some-thing.v2']);
+    await git(repoPath, ['tag', 'v1.2.3-rc.1']);
+    await writeFile(join(repoPath, 'foo.js'), 'let x = 2;\n');
+
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    // Slashes, dots, non-leading dashes, and `HEAD~N` expressions must all
+    // survive validation (they may still 400 from git itself, but not from us).
+    for (const ref of ['HEAD', 'feat/some-thing.v2', 'v1.2.3-rc.1', 'HEAD~0', 'HEAD^']) {
+      const res = await fetch(
+        `${baseUrl}/api/diff?repo=${repo.id}&base=${encodeURIComponent(ref)}`,
+      );
+      assert.equal(res.status, 200, `ref ${ref} should have been accepted`);
+    }
+  });
+
+  test('WORKING_TREE remains a valid target sentinel', async () => {
+    const repoPath = await trackedTempRepo('ref-sentinel');
+    await writeFile(join(repoPath, 'foo.js'), 'let x = 1;\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add foo']);
+    await writeFile(join(repoPath, 'foo.js'), 'let x = 2;\n');
+
+    const repo = await registerRepo(baseUrl, repoPath);
+    const res = await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=HEAD&target=WORKING_TREE`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.files.length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-origin defence (Critical)
+// ---------------------------------------------------------------------------
+
+describe('cross-origin requests', () => {
+  test('GET /api/diff with a foreign Origin is rejected', async () => {
+    const repoPath = await trackedTempRepo('xorigin-get');
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const res = await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=HEAD`, {
+      headers: { Origin: 'http://evil.example' },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  test('GET /api/repos with Sec-Fetch-Site: cross-site is rejected', async () => {
+    const res = await fetch(`${baseUrl}/api/repos`, {
+      headers: { 'Sec-Fetch-Site': 'cross-site' },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  test('Sec-Fetch-Site: same-site (different port, same host) is rejected', async () => {
+    const res = await fetch(`${baseUrl}/api/repos`, {
+      headers: { 'Sec-Fetch-Site': 'same-site' },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  test('an opaque Origin of "null" is rejected', async () => {
+    const res = await fetch(`${baseUrl}/api/repos`, { headers: { Origin: 'null' } });
+    assert.equal(res.status, 403);
+  });
+
+  test('POST /api/repos from a foreign Origin is rejected', async () => {
+    const repoPath = await trackedTempRepo('xorigin-post');
+    const res = await fetch(`${baseUrl}/api/repos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'http://evil.example' },
+      body: JSON.stringify({ path: repoPath }),
+    });
+    assert.equal(res.status, 403);
+  });
+
+  // The tool's own front end lives on the same origin it talks to, so these
+  // are exactly the header combinations it produces and they must pass.
+  test("the front end's own same-origin GET is allowed", async () => {
+    const res = await rawRequest('/api/repos', {
+      headers: { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors' },
+    });
+    assert.equal(res.status, 200);
+  });
+
+  test("the front end's own same-origin POST (Origin matching Host) is allowed", async () => {
+    const { port } = server.address();
+    const repoPath = await trackedTempRepo('xorigin-same');
+    const res = await fetch(`${baseUrl}/api/repos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: `http://127.0.0.1:${port}`,
+        'Sec-Fetch-Site': 'same-origin',
+      },
+      body: JSON.stringify({ path: repoPath }),
+    });
+    assert.equal(res.status, 200);
+  });
+
+  test('direct navigation (Sec-Fetch-Site: none) is allowed', async () => {
+    const res = await rawRequest('/api/repos', { headers: { 'Sec-Fetch-Site': 'none' } });
+    assert.equal(res.status, 200);
+  });
+
+  test('a cross-origin form post cannot reach the body parser (non-JSON Content-Type)', async () => {
+    const repoPath = await trackedTempRepo('xorigin-form');
+    const res = await fetch(`${baseUrl}/api/repos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ path: repoPath }),
+    });
+    assert.equal(res.status, 415);
+
+    // And nothing was registered as a side effect.
+    const list = await (await fetch(`${baseUrl}/api/repos`)).json();
+    assert.deepEqual(list.repos, []);
+  });
+
+  test('form-urlencoded bodies are rejected too', async () => {
+    const res = await fetch(`${baseUrl}/api/repos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'path=/tmp',
+    });
+    assert.equal(res.status, 415);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Malformed input handling (I2, I3, M4)
+// ---------------------------------------------------------------------------
+
+describe('malformed request handling', () => {
+  test('malformed percent-encoding in the path returns 400, not 500', async () => {
+    const res = await rawRequest('/%zz');
+    assert.equal(res.status, 400);
+
+    const followUp = await fetch(`${baseUrl}/api/repos`);
+    assert.equal(followUp.status, 200);
+  });
+
+  test('malformed percent-encoding under /api/ returns 400, not 500', async () => {
+    const res = await rawRequest('/api/%e0%a4%a');
+    assert.equal(res.status, 400);
+  });
+
+  test('a JSON body of literal null returns 400 on every body endpoint', async () => {
+    const endpoints = ['/api/repos', '/api/check', '/api/comment', '/api/orphan/discard'];
+    for (const endpoint of endpoints) {
+      const res = await fetch(`${baseUrl}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: 'null',
+      });
+      assert.equal(res.status, 400, `${endpoint} should 400 on a null body`);
+      const body = await res.json();
+      assert.ok(body.error);
+    }
+
+    const followUp = await fetch(`${baseUrl}/api/repos`);
+    assert.equal(followUp.status, 200);
+  });
+
+  test('non-object JSON bodies (array, string, number) return 400', async () => {
+    for (const raw of ['[]', '"hello"', '42', 'true']) {
+      const res = await fetch(`${baseUrl}/api/repos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: raw,
+      });
+      assert.equal(res.status, 400, `body ${raw} should 400`);
+    }
+  });
+
+  test('an oversized request body is rejected rather than buffered', async () => {
+    const huge = JSON.stringify({ path: 'x'.repeat(5 * 1024 * 1024) });
+    const res = await fetch(`${baseUrl}/api/repos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: huge,
+    });
+    // Exactly 413 -- before the cap existed this request was fully buffered
+    // and then 400'd by addRepo for an unrelated reason, so a loose
+    // "400 or 413" assertion would have passed against the unfixed server.
+    assert.equal(res.status, 413);
+
+    const followUp = await fetch(`${baseUrl}/api/repos`);
+    assert.equal(followUp.status, 200);
+  });
+
+  test('a body just under the cap is still accepted', async () => {
+    const repoPath = await trackedTempRepo('body-under-cap');
+    const res = await fetch(`${baseUrl}/api/repos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: repoPath, filler: 'x'.repeat(1000) }),
+    });
+    assert.equal(res.status, 200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The amend / line-shift invariant, end to end through the server.
+//
+// This is the whole justification for keying change points by content hash
+// rather than by line number: rewriting the tip commit so that every line
+// number moves must NOT lose the reviewer's checkmarks.
+// ---------------------------------------------------------------------------
+
+describe('amend / line-shift invariant', () => {
+  test('amending the tip so every line shifts keeps change point ids and checkmarks', async () => {
+    const repoPath = await trackedTempRepo('amend-invariant');
+
+    const prelude = Array.from({ length: 20 }, (_, i) => `// header ${i + 1}`).join('\n');
+    const fooV1 = `${prelude}\n\nfunction foo() {\n  return 1;\n}\n`;
+    const fooV2 = `${prelude}\n\nfunction foo() {\n  return 2;\n}\n`;
+
+    await writeFile(join(repoPath, 'foo.js'), fooV1);
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add foo']);
+    const base = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    await writeFile(join(repoPath, 'foo.js'), fooV2);
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'change foo']);
+    const target = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const before = await (
+      await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${base}&target=${target}`)
+    ).json();
+
+    const fooFile = before.files.find((f) => f.path === 'foo.js');
+    assert.ok(fooFile, 'expected foo.js in the diff');
+    const changePoint = fooFile.groups[0].changePoints[0];
+    const originalId = changePoint.id;
+    const originalLine = changePoint.newLine ?? changePoint.startLine ?? null;
+    assert.equal(changePoint.checked, false);
+
+    // Check it, and leave a comment so both kinds of state are exercised.
+    const checkRes = await fetch(`${baseUrl}/api/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repo.id, key: originalId, checked: true }),
+    });
+    assert.equal(checkRes.status, 200);
+
+    // Amend the tip commit, prepending 10 lines so every line number below
+    // moves. The *content* of foo's change is untouched.
+    const shifted = Array.from({ length: 10 }, (_, i) => `// shifted ${i + 1}`).join('\n');
+    await writeFile(join(repoPath, 'foo.js'), `${shifted}\n${fooV2}`);
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '--amend', '--no-edit']);
+    const amendedTarget = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+    assert.notEqual(amendedTarget, target, 'amend should have produced a new commit sha');
+
+    const after = await (
+      await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${base}&target=${amendedTarget}`)
+    ).json();
+
+    const fooAfter = after.files.find((f) => f.path === 'foo.js');
+    assert.ok(fooAfter, 'expected foo.js in the post-amend diff');
+
+    const allPoints = fooAfter.groups.flatMap((g) => g.changePoints);
+    const survivor = allPoints.find((p) => p.id === originalId);
+    assert.ok(
+      survivor,
+      `change point ${originalId} disappeared after the amend; ` +
+        `ids present: ${allPoints.map((p) => p.id).join(', ')}`,
+    );
+    assert.equal(survivor.checked, true, 'the checkmark must survive the line shift');
+    assert.equal(after.stats.checked, 1);
+    assert.deepEqual(after.orphans, [], 'nothing should have been orphaned');
+
+    // Sanity: the line numbers really did move, so this test would have failed
+    // under a line-number-keyed design.
+    const newLine = survivor.newLine ?? survivor.startLine ?? null;
+    if (originalLine !== null && newLine !== null) {
+      assert.notEqual(newLine, originalLine, 'expected the change point to have shifted lines');
+    }
   });
 });

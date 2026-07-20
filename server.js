@@ -27,6 +27,15 @@ const PUBLIC_DIR = resolve(__dirname, 'public');
 // concurrent subprocesses -- this caps it to a small, fixed batch.
 const CONTENT_FETCH_CONCURRENCY = 8;
 
+// Largest request body we will accept. Every body this API takes is a small
+// JSON object (a repo id, a change point key, a comment); nothing legitimate
+// comes close. Without a cap, readJsonBody buffers whatever it is sent.
+const MAX_BODY_BYTES = 1024 * 1024; // 1MB
+
+// Longest ref we will accept. Git itself has no hard limit, but a ref this
+// long is not something a human typed.
+const MAX_REF_LENGTH = 255;
+
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -79,7 +88,18 @@ export function createServer() {
 async function handleRequest(req, res) {
   try {
     const url = new URL(req.url, 'http://localhost');
-    const pathname = decodeURIComponent(url.pathname);
+
+    // Malformed percent-encoding (`/%zz`) makes decodeURIComponent throw a
+    // URIError. That is bad *input*, not a server fault -- letting it reach
+    // the generic handler turns every stray port scan into a 500 plus a stack
+    // trace on the console, which drowns out real errors.
+    let pathname;
+    try {
+      pathname = decodeURIComponent(url.pathname);
+    } catch {
+      sendJson(res, 400, { error: 'malformed percent-encoding in request path' });
+      return;
+    }
 
     if (pathname.startsWith('/api/')) {
       await routeApi(req, res, url, pathname);
@@ -116,23 +136,179 @@ function sendJson(res, status, body) {
 }
 
 function readJsonBody(req) {
+  // Require a JSON Content-Type. This is what stops a plain cross-origin HTML
+  // form -- which can only send text/plain, multipart/form-data or
+  // application/x-www-form-urlencoded, and needs no CORS preflight -- from
+  // reaching this parser at all. A same-origin `fetch` with an explicit JSON
+  // Content-Type (what the front end sends) is unaffected.
+  const contentType = req.headers['content-type'];
+  const mediaType = typeof contentType === 'string' ? contentType.split(';')[0].trim().toLowerCase() : '';
+  if (mediaType !== 'application/json') {
+    return Promise.reject(
+      new HttpError(415, 'Content-Type must be application/json'),
+    );
+  }
+
   return new Promise((resolvePromise, rejectPromise) => {
     const chunks = [];
-    req.on('data', (chunk) => chunks.push(chunk));
+    let size = 0;
+    let tooLarge = false;
+
+    req.on('data', (chunk) => {
+      if (tooLarge) return;
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        // Stop buffering immediately -- the whole point is to bound memory.
+        // We keep draining the socket (rather than destroying it) so the
+        // client gets a clean 413 instead of a connection reset.
+        tooLarge = true;
+        chunks.length = 0;
+        return;
+      }
+      chunks.push(chunk);
+    });
+
     req.on('end', () => {
+      if (tooLarge) {
+        rejectPromise(
+          new HttpError(413, `request body exceeds the ${MAX_BODY_BYTES} byte limit`),
+        );
+        return;
+      }
+
       const raw = Buffer.concat(chunks).toString('utf8');
       if (raw.trim() === '') {
         resolvePromise({});
         return;
       }
+
+      let parsed;
       try {
-        resolvePromise(JSON.parse(raw));
+        parsed = JSON.parse(raw);
       } catch {
         rejectPromise(new HttpError(400, 'invalid JSON body'));
+        return;
       }
+
+      // JSON.parse happily returns null, arrays, strings and numbers. Every
+      // caller here immediately does `body.someField`, which throws on null
+      // and silently misbehaves on the rest. Rejecting anything that is not a
+      // plain object fixes all four body endpoints in one place.
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        rejectPromise(new HttpError(400, 'request body must be a JSON object'));
+        return;
+      }
+
+      resolvePromise(parsed);
     });
+
     req.on('error', (err) => rejectPromise(err));
   });
+}
+
+// ---------------------------------------------------------------------------
+// Cross-origin defence.
+//
+// Every /api/ route is guarded, not just the mutating ones: the argument
+// injection this defends against is a plain GET, so `<img src=...>` on any
+// page the user happens to visit is a live attack vector.
+//
+// The rule, in order:
+//
+//   1. `Sec-Fetch-Site`, when present, is authoritative. Browsers set it on
+//      every request and page JavaScript cannot forge it. We allow only
+//      `same-origin` (the tool's own front end calling its own API) and
+//      `none` (the user typing the URL / opening a bookmark). `cross-site`
+//      and `same-site` are both rejected -- `same-site` matters here because
+//      a page on http://localhost:3000 is "same site" as :7777, ports being
+//      irrelevant to the site definition, and that is exactly the neighbour
+//      we do not want reaching in.
+//
+//   2. `Origin`, when present, must equal this server's own origin. A
+//      literal `null` Origin (sandboxed iframe, data: URL) is rejected too.
+//
+//   3. If neither header is present, allow. This is the deliberate part: a
+//      browser attack always produces at least one of the two -- a
+//      cross-origin fetch/XHR always sends `Origin`, and every modern browser
+//      sends `Sec-Fetch-Site` on `<img>`, `<form>` and navigation requests
+//      alike. So "neither header" means a non-browser client (curl, the test
+//      suite, a script), which has no ambient cookies or credentials to abuse
+//      and therefore no CSRF exposure to close. Defaulting this case closed
+//      would break curl and the tests for no security gain; defaulting it
+//      open is safe precisely because the browser cases are already covered
+//      above.
+// ---------------------------------------------------------------------------
+
+function assertNotCrossOrigin(req) {
+  const secFetchSite = req.headers['sec-fetch-site'];
+  if (typeof secFetchSite === 'string' && secFetchSite !== '') {
+    if (secFetchSite !== 'same-origin' && secFetchSite !== 'none') {
+      throw new HttpError(403, 'cross-origin requests are not allowed');
+    }
+  }
+
+  const origin = req.headers.origin;
+  if (typeof origin === 'string' && origin !== '') {
+    const host = req.headers.host;
+    const allowed = typeof host === 'string' && host !== ''
+      ? new Set([`http://${host}`, `https://${host}`])
+      : new Set();
+    if (!allowed.has(origin)) {
+      throw new HttpError(403, 'cross-origin requests are not allowed');
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ref validation.
+//
+// `base` and `target` are interpolated straight into a git command line, so a
+// value beginning with `-` is read by git as an *option* -- `--output=<path>`
+// turns a read-only diff endpoint into arbitrary file write. git.js also
+// passes `--end-of-options` now, but that is the second layer; this is the
+// first, and it is the one that produces a readable 400 rather than a
+// confusing git error.
+//
+// The rule is deliberately permissive about *characters* and strict about the
+// things that actually matter, so that it does not reject refs git considers
+// perfectly ordinary:
+//
+//   accepted: `main`, `HEAD`, `feat/some-thing.v2`, `v1.2.3-rc.1`, `HEAD~3`,
+//             `HEAD^`, `@{u}`, 40-char SHAs, non-ASCII branch names, and the
+//             `WORKING_TREE` sentinel -- i.e. `/`, `.`, non-leading `-`, and
+//             `~`/`^`/`@`/`{}` revision syntax all pass.
+//
+//   rejected: anything starting with `-` (the injection itself); anything
+//             containing whitespace or a control character (no ref legally
+//             contains either, and they are how a value smuggles a second
+//             argument); anything containing `:` (which would let a ref
+//             smuggle a path into `git show <ref>:<path>` in
+//             git.getFileContent); and anything over 255 characters.
+// ---------------------------------------------------------------------------
+
+// \p{C} = control / format code points, \s = any whitespace, plus a literal ':'.
+const REF_FORBIDDEN_CHARS = /[\p{C}\s:]/u;
+
+function requireRef(value, fieldName) {
+  const ref = requireString(value, fieldName);
+
+  if (ref.startsWith('-')) {
+    throw new HttpError(
+      400,
+      `${fieldName} must not start with '-' (it would be interpreted as a git option)`,
+    );
+  }
+  if (REF_FORBIDDEN_CHARS.test(ref)) {
+    throw new HttpError(
+      400,
+      `${fieldName} must not contain whitespace, control characters, or ':'`,
+    );
+  }
+  if (ref.length > MAX_REF_LENGTH) {
+    throw new HttpError(400, `${fieldName} must be at most ${MAX_REF_LENGTH} characters`);
+  }
+
+  return ref;
 }
 
 async function getRepoOr404(id) {
@@ -159,6 +335,10 @@ function requireString(value, fieldName) {
 
 async function routeApi(req, res, url, pathname) {
   const { method } = req;
+
+  // Applies to every /api/ route including the read-only GETs -- the argument
+  // injection this guards against is itself a GET.
+  assertNotCrossOrigin(req);
 
   if (pathname === '/api/repos' && method === 'GET') {
     return sendJson(res, 200, { repos: await config.listRepos() });
@@ -195,8 +375,8 @@ async function routeApi(req, res, url, pathname) {
 
   if (pathname === '/api/diff' && method === 'GET') {
     const repo = await getRepoOr404(url.searchParams.get('repo'));
-    const base = requireString(url.searchParams.get('base'), 'base');
-    const target = url.searchParams.get('target') || 'WORKING_TREE';
+    const base = requireRef(url.searchParams.get('base'), 'base');
+    const target = requireRef(url.searchParams.get('target') || 'WORKING_TREE', 'target');
 
     const { annotated } = await runDiffPipeline(repo, base, target);
     return sendJson(res, 200, {
@@ -244,8 +424,8 @@ async function routeApi(req, res, url, pathname) {
 
   if (pathname === '/api/export' && method === 'GET') {
     const repo = await getRepoOr404(url.searchParams.get('repo'));
-    const base = requireString(url.searchParams.get('base'), 'base');
-    const target = url.searchParams.get('target') || 'WORKING_TREE';
+    const base = requireRef(url.searchParams.get('base'), 'base');
+    const target = requireRef(url.searchParams.get('target') || 'WORKING_TREE', 'target');
     const format = url.searchParams.get('format');
     if (format !== 'claude' && format !== 'markdown') {
       throw new HttpError(400, "format must be 'claude' or 'markdown'");
