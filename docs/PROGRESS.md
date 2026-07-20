@@ -263,7 +263,7 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 - **Name**: 側邊欄重做、三層可辨、可收合
 - **Deps**: ui-shell-tree
 - **Touches**: `public/`
-- **Status**: Completed (`90c1b2a`)，review 進行中
+- **Status**: Completed (`90c1b2a`)
 
 ### ui-code-themes
 - **來源**: 使用者於 2026-07-21 追加需求
