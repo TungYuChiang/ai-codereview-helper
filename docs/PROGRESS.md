@@ -86,12 +86,12 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 - **Tier**: 2
 - **Touches**: `model.js`, `test/model.test.js`
 - **Acceptance**:
-  - [ ] 同一 function 內三個 hunk → 三個獨立變更點
-  - [ ] 橫跨兩個 function 的 hunk → 拆成兩個變更點，各自歸屬正確 function
-  - [ ] 不在任何 function 內的改動掛在檔案層
-  - [ ] 非 JS 檔（`functions.js` 回 `[]`）自動降級為兩層：檔案 → hunk
-  - [ ] 各層有 `已看/總數` 可供加總
-- **Status**: Pending
+  - [x] 同一 function 內三個 hunk → 三個獨立變更點
+  - [x] 橫跨兩個 function 的 hunk → 拆成兩個變更點，各自歸屬正確 function
+  - [x] 不在任何 function 內的改動掛在檔案層
+  - [x] 非 JS 檔（`functions.js` 回 `[]`）自動降級為兩層：檔案 → hunk
+  - [x] 各層有 `已看/總數` 可供加總
+- **Status**: Completed (`967194f`..`8d641ba`)
 
 ### state-store
 - **Spec 章節**: 進度失效規則 — `state.js`
@@ -227,8 +227,8 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 
 | Status | Count |
 |--------|-------|
-| Pending | 8 |
+| Pending | 7 |
 | In Progress | 0 |
-| Completed | 3 |
+| Completed | 4 |
 | Failed | 0 |
 | Total | 11 |
