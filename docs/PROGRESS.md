@@ -96,19 +96,19 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 ### state-store
 - **Spec 章節**: 進度失效規則 — `state.js`
 - **Name**: 進度持久化與 content hash 失效
-- **Scope**: 以 `hash(檔案路徑 + function 名 + 該變更點的 diff 內容)` 為 key，讀寫
+- **Scope**: 以 `hash(檔案路徑 + function 名 + diff 內容 + 同桶內出現序號)` 為 key，讀寫
   `~/.local-code-review/state/<repo-id>.json`，把已存的勾與 comment 合併回三層樹。
   變更點消失的 comment 搬到「孤兒」區保留。
 - **Deps**: change-point-model
 - **Tier**: 2
 - **Touches**: `state.js`, `test/state.test.js`
 - **Acceptance**:
-  - [ ] amend 後行號全變、內容沒變 → 勾保留
-  - [ ] 該段 code 真的被改了 → hash 變了，回到未讀
-  - [ ] function 改名 → 視為新的變更點（回到未讀）
-  - [ ] 變更點消失的 comment 進入孤兒區而非被丟棄
-  - [ ] 進度檔寫在 `~/.local-code-review/state/`，不在被 review 專案內
-- **Status**: Pending
+  - [x] amend 後行號全變、內容沒變 → 勾保留
+  - [x] 該段 code 真的被改了 → hash 變了，回到未讀
+  - [x] function 改名 → 視為新的變更點（回到未讀）
+  - [x] 變更點消失的 comment 進入孤兒區而非被丟棄
+  - [x] 進度檔寫在 `~/.local-code-review/state/`，不在被 review 專案內
+- **Status**: Completed (`7ca0daf`..`e72f420`)
 
 ### export-formats
 - **Spec 章節**: 匯出 — `export.js`
@@ -227,8 +227,8 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 
 | Status | Count |
 |--------|-------|
-| Pending | 7 |
+| Pending | 6 |
 | In Progress | 0 |
-| Completed | 4 |
+| Completed | 5 |
 | Failed | 0 |
 | Total | 11 |
