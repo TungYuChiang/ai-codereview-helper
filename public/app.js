@@ -62,9 +62,9 @@ const appState = {
 // appState because it holds live element references, not serializable
 // application state.
 const dom = {
-  changePoints: new Map(), // key -> { changePoint, group, file, groupKey, leftRow, leftCheckbox, rightContainer, rightCheckbox }
-  groups: new Map(),       // groupKey -> { group, badgeEl, toggleBtn, childUl }
-  files: new Map(),        // path -> { file, badgeEl, toggleBtn, childUl }
+  changePoints: new Map(), // key -> { changePoint, group, file, groupKey, leftRow, leftCheckbox, rightContainer, rightCheckbox, contentEl }
+  groups: new Map(),       // groupKey -> { group, badgeEl, progressFillEl, toggleBtn, childUl }
+  files: new Map(),        // path -> { file, badgeEl, progressFillEl, toggleBtn, childUl }
 };
 
 let scrollObserver = null;
@@ -396,6 +396,34 @@ function renderTree() {
   setupScrollSpy();
 }
 
+// Splits a file path into "dir/" (muted) + "name" (foreground) so a single
+// tree row reads as path + emphasis without relying on indentation --
+// addendum: the file level must be visually distinguishable from function
+// and change-point levels by typeface/weight, not just indent depth.
+function buildFileLabel(path) {
+  const label = createEl('span', { className: 'tree-label' });
+  const slash = path.lastIndexOf('/');
+  if (slash === -1) {
+    label.appendChild(createEl('span', { className: 'tree-name', text: path }));
+    return label;
+  }
+  label.appendChild(createEl('span', { className: 'tree-dir', text: path.slice(0, slash + 1) }));
+  label.appendChild(createEl('span', { className: 'tree-name', text: path.slice(slash + 1) }));
+  return label;
+}
+
+// Thin 2px progress rail shown under file / function rows (addendum:
+// "how much is left" should be scannable, not read off a small grey
+// counter). Returns the outer track element; caller keeps the fill ref to
+// update its width in place as checks come in, without re-rendering.
+function buildProgressRail(checked, total) {
+  const track = createEl('div', { className: 'tree-progress' });
+  const fill = createEl('span', { className: 'tree-progress-fill' });
+  fill.style.width = total > 0 ? `${Math.round((checked / total) * 100)}%` : '0%';
+  track.appendChild(fill);
+  return { track, fill };
+}
+
 function renderFileNode(file) {
   const li = createEl('li', { className: 'tree-file' });
   const row = createEl('div', { className: 'tree-row tree-file-row' });
@@ -407,18 +435,21 @@ function renderFileNode(file) {
   toggleBtn.type = 'button';
   toggleBtn.addEventListener('click', () => toggleCollapse(collapseId, 'file', file.path));
 
-  const label = createEl('span', { className: 'tree-label', text: file.path });
+  const label = buildFileLabel(file.path);
   const badge = createEl('span', { className: 'tree-badge', text: `${file.checked}/${file.total}` });
   if (file.allChecked) badge.classList.add('all-checked');
 
   row.append(toggleBtn, label, badge);
   li.appendChild(row);
 
+  const { track: progressTrack, fill: progressFill } = buildProgressRail(file.checked, file.total);
+  li.appendChild(progressTrack);
+
   const childUl = createEl('ul', { className: 'tree-children' });
   childUl.hidden = collapsed;
   li.appendChild(childUl);
 
-  dom.files.set(file.path, { file, badgeEl: badge, toggleBtn, childUl });
+  dom.files.set(file.path, { file, badgeEl: badge, progressFillEl: progressFill, toggleBtn, childUl });
   treeRootEl.appendChild(li);
 
   file.groups.forEach((group, groupIdx) => {
@@ -455,11 +486,14 @@ function renderGroupNode(group, groupKey, file, parentUl) {
   row.append(toggleBtn, label, badge);
   li.appendChild(row);
 
+  const { track: progressTrack, fill: progressFill } = buildProgressRail(group.checked, group.total);
+  li.appendChild(progressTrack);
+
   const childUl = createEl('ul', { className: 'tree-children' });
   childUl.hidden = collapsed;
   li.appendChild(childUl);
 
-  dom.groups.set(groupKey, { group, badgeEl: badge, toggleBtn, childUl });
+  dom.groups.set(groupKey, { group, badgeEl: badge, progressFillEl: progressFill, toggleBtn, childUl });
   parentUl.appendChild(li);
 
   for (const changePoint of group.changePoints) {
@@ -785,12 +819,17 @@ function applyCheckedChange(key, checked) {
   updateStatsDom();
 }
 
+function progressPercent(checked, total) {
+  return total > 0 ? `${Math.round((checked / total) * 100)}%` : '0%';
+}
+
 function updateGroupDom(groupKey) {
   if (!groupKey) return;
   const entry = dom.groups.get(groupKey);
   if (!entry) return;
   entry.badgeEl.textContent = `${entry.group.checked}/${entry.group.total}`;
   entry.badgeEl.classList.toggle('all-checked', entry.group.allChecked);
+  entry.progressFillEl.style.width = progressPercent(entry.group.checked, entry.group.total);
 }
 
 function updateFileDom(path) {
@@ -798,6 +837,7 @@ function updateFileDom(path) {
   if (!entry) return;
   entry.badgeEl.textContent = `${entry.file.checked}/${entry.file.total}`;
   entry.badgeEl.classList.toggle('all-checked', entry.file.allChecked);
+  entry.progressFillEl.style.width = progressPercent(entry.file.checked, entry.file.total);
 }
 
 function updateStatsDom() {
@@ -825,8 +865,16 @@ function selectChangePoint(key, { scroll = false } = {}) {
 
   if (scroll) {
     const entry = dom.changePoints.get(key);
-    entry.rightContainer.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    // Addendum: j/k movement gets a 150ms smooth scroll so the user can
+    // perceive direction, but prefers-reduced-motion always wins -- jump
+    // instantly instead.
+    const behavior = prefersReducedMotion() ? 'auto' : 'smooth';
+    entry.rightContainer.scrollIntoView({ block: 'start', behavior });
   }
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
 function moveSelection(delta) {

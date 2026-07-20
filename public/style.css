@@ -1,6 +1,154 @@
-/* style.css — layout shell for local-code-review.
- * Top bar (fixed height, does not scroll) + left tree pane (own scroll) +
- * right main pane (own scroll, the primary scroll region). */
+/* style.css — visual design for local-code-review.
+ *
+ * Layout shell unchanged: top bar (fixed height) + left tree pane (own
+ * scroll) + right main pane (own scroll, the primary scroll region).
+ *
+ * This file implements the dark-first, token-driven design system recorded
+ * in design-system/local-code-review/MASTER.md + ADDENDUM.md (ADDENDUM
+ * wins on conflict). Every color is a semantic custom property -- no raw
+ * hex inside component rules below the token block.
+ */
+
+/* ---------------------------------------------------------------------- */
+/* Fonts -- vendored locally, no CDN. See public/vendor/fonts/.            */
+/* Weights taken: IBM Plex Sans 400/500/600, JetBrains Mono 400/500.       */
+/* ---------------------------------------------------------------------- */
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("vendor/fonts/IBMPlexSans-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("vendor/fonts/IBMPlexSans-500.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("vendor/fonts/IBMPlexSans-600.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("vendor/fonts/JetBrainsMono-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("vendor/fonts/JetBrainsMono-500.woff2") format("woff2");
+}
+
+/* ---------------------------------------------------------------------- */
+/* Tokens -- dark is default, prefers-color-scheme:light gets a real       */
+/* mapping. All component rules below reference these, never raw hex.      */
+/* ---------------------------------------------------------------------- */
+
+:root {
+  /* -- font stacks -- */
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* -- surfaces -- */
+  --color-bg: #0f172a;         /* page background */
+  --color-panel: #131c31;      /* raised panel (current change point body) */
+  --color-surface: #0b111f;    /* topbar / footer band */
+  --color-track: #1c2437;      /* progress-bar / checkbox track */
+
+  /* -- borders / separators -- */
+  --color-border: #1e293b;     /* hairline separators */
+  --color-border-strong: #334155; /* control outlines (select, checkbox, pill) */
+
+  /* -- text -- */
+  --color-fg: #f8fafc;         /* primary text */
+  --color-fg-dim: #cbd5e1;     /* secondary text (function names, headers) */
+  --color-fg-muted: #94a3b8;   /* directory paths, gutter numbers */
+  --color-fg-faint: #64748b;   /* least emphasis: counts, disabled */
+  --color-fg-ghost: #475569;   /* unread status rail, placeholder */
+
+  /* -- accent / semantic -- */
+  --color-accent: #22c55e;        /* progress, read state, additions */
+  --color-accent-fg: #052e16;     /* text on top of solid accent fill */
+  --color-accent-wash: rgba(34, 197, 94, 0.12);   /* diff add row tint */
+  --color-accent-wash-strong: rgba(34, 197, 94, 0.32);
+  --color-destructive: #ef4444;   /* deletions, errors */
+  --color-destructive-wash: rgba(239, 68, 68, 0.12); /* diff del row tint */
+  --color-note: #eab308;          /* comments / attention (amber, distinct from accent) */
+  --color-note-wash: rgba(234, 179, 8, 0.12);
+
+  /* -- change-point status rail: four states, addendum 4.4 -- */
+  --color-rail-unread: var(--color-fg-ghost);
+  --color-rail-current: var(--color-accent);
+  --color-rail-read: color-mix(in srgb, var(--color-accent) 55%, var(--color-bg));
+  --color-rail-current-read: var(--color-accent);
+
+  /* -- focus -- */
+  --color-focus-ring: #22c55e;
+
+  /* -- code token colors (kept semantic so Prism composites on tokens,     */
+  /*    not backgrounds -- see diff row rules further down) -- */
+  --code-fg: #e2e8f0;
+  --code-keyword: #c792ea;
+  --code-function: #82aaff;
+  --code-number: #f78c6c;
+  --code-string: #c3e88d;
+  --code-comment: #64748b;
+
+  /* -- motion -- */
+  --transition-fast: 150ms ease;
+  --transition-normal: 200ms ease;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --color-bg: #f7f8f8;
+    --color-panel: #ffffff;
+    --color-surface: #eef0f2;
+    --color-track: #e2e5e8;
+
+    --color-border: #dfe3e5;
+    --color-border-strong: #c3c9ce;
+
+    --color-fg: #101418;
+    --color-fg-dim: #3d474f;
+    --color-fg-muted: #5b6771;
+    --color-fg-faint: #78838c;
+    --color-fg-ghost: #a4acb3;
+
+    --color-accent: #16a34a;
+    --color-accent-fg: #ffffff;
+    --color-accent-wash: rgba(22, 163, 74, 0.12);
+    --color-accent-wash-strong: rgba(22, 163, 74, 0.28);
+    --color-destructive: #dc2626;
+    --color-destructive-wash: rgba(220, 38, 38, 0.1);
+    --color-note: #b45309;
+    --color-note-wash: rgba(180, 83, 9, 0.1);
+
+    --color-focus-ring: #16a34a;
+
+    --code-fg: #1b1f23;
+    --code-keyword: #9333ea;
+    --code-function: #2563eb;
+    --code-number: #c2410c;
+    --code-string: #15803d;
+    --code-comment: #78838c;
+  }
+}
 
 * {
   box-sizing: border-box;
@@ -12,16 +160,31 @@ html, body {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-family: var(--font-sans);
   font-size: 13px;
-  color: #1b1f23;
-  background: #ffffff;
+  color: var(--color-fg);
+  background: var(--color-bg);
 }
 
 #app {
   display: flex;
   flex-direction: column;
   height: 100vh;
+}
+
+/* A visible, high-contrast focus ring everywhere -- never removed. Mouse
+ * clicks don't show it (focus-visible), keyboard use always does. */
+:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -32,10 +195,10 @@ body {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 14px;
   padding: 8px 12px;
-  border-bottom: 1px solid #d0d7de;
-  background: #f6f8fa;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
   flex-wrap: wrap;
 }
 
@@ -46,12 +209,27 @@ body {
 }
 
 .ref-sep {
-  color: #6e7781;
+  color: var(--color-fg-faint);
   padding: 0 2px;
+  font-family: var(--font-mono);
 }
 
 #add-repo-toggle {
   cursor: pointer;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-panel);
+  color: var(--color-fg-dim);
+  font-size: 14px;
+  line-height: 1;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+#add-repo-toggle:hover {
+  border-color: var(--color-accent);
+  color: var(--color-fg);
 }
 
 #add-repo-form {
@@ -69,45 +247,155 @@ body {
 }
 
 .field-error {
-  color: #cf222e;
+  color: var(--color-destructive);
+  font-size: 12px;
 }
 
 .hint {
-  color: #9a6700;
-  background: #fff8c5;
-  border: 1px solid #d4a72c;
+  color: var(--color-note);
+  background: var(--color-note-wash);
+  border: 1px solid var(--color-note);
   border-radius: 4px;
   padding: 3px 8px;
+  font-size: 12px;
 }
 
 .view-toggle {
-  border: 1px solid #d0d7de;
+  border: 1px solid var(--color-border-strong);
   border-radius: 6px;
   overflow: hidden;
 }
 
 .view-btn {
   border: none;
-  background: #ffffff;
+  background: var(--color-panel);
+  color: var(--color-fg-muted);
   padding: 4px 10px;
   cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
 .view-btn + .view-btn {
-  border-left: 1px solid #d0d7de;
+  border-left: 1px solid var(--color-border-strong);
 }
 
 .view-btn.active {
-  background: #0969da;
-  color: #ffffff;
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  font-weight: 500;
 }
 
 .stats-badge {
   margin-left: auto;
-  font-weight: 600;
-  padding: 2px 8px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  padding: 3px 9px;
   border-radius: 999px;
-  background: #eaeef2;
+  background: var(--color-track);
+  color: var(--color-fg-dim);
+  border: 1px solid var(--color-border-strong);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Native controls -- select + checkbox, restyled per addendum            */
+/* ---------------------------------------------------------------------- */
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  color: var(--color-fg);
+  background-color: var(--color-panel);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  padding: 4px 24px 4px 8px;
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--color-fg-muted) 50%),
+    linear-gradient(135deg, var(--color-fg-muted) 50%, transparent 50%);
+  background-position: calc(100% - 13px) center, calc(100% - 8px) center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  transition: border-color var(--transition-fast);
+}
+
+select:hover {
+  border-color: var(--color-fg-muted);
+}
+
+select:focus-visible {
+  border-color: var(--color-accent);
+}
+
+input[type="text"] {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  color: var(--color-fg);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  padding: 4px 8px;
+  transition: border-color var(--transition-fast);
+}
+
+input[type="text"]:focus-visible {
+  border-color: var(--color-accent);
+}
+
+button {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  color: var(--color-fg-dim);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+button:hover {
+  border-color: var(--color-fg-muted);
+  color: var(--color-fg);
+}
+
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin: 0;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 4px;
+  background: var(--color-track);
+  cursor: pointer;
+  position: relative;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+input[type="checkbox"]:hover {
+  border-color: var(--color-accent);
+}
+
+input[type="checkbox"]:checked {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--color-accent-fg);
+  border-width: 0 2px 2px 0;
+  transform: rotate(40deg);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -116,10 +404,11 @@ body {
 
 .error-banner {
   flex: 0 0 auto;
-  background: #ffebe9;
-  color: #82071e;
-  border-bottom: 1px solid #ff8182;
+  background: var(--color-destructive-wash);
+  color: var(--color-destructive);
+  border-bottom: 1px solid var(--color-destructive);
   padding: 6px 12px;
+  font-size: 12.5px;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -134,41 +423,39 @@ body {
 }
 
 #tree-pane {
-  flex: 0 0 300px;
+  flex: 0 0 268px;
   overflow-y: auto;
-  border-right: 1px solid #d0d7de;
-  background: #ffffff;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-bg);
+  padding: 6px 0;
 }
 
 #main-pane {
   flex: 1 1 auto;
   overflow-y: auto;
-  background: #ffffff;
+  background: var(--color-bg);
 }
 
 /* ---------------------------------------------------------------------- */
-/* Tree                                                                    */
+/* Tree -- three levels distinguishable by typeface/weight/size, not just  */
+/* indentation (addendum's primary complaint about the old UI).            */
 /* ---------------------------------------------------------------------- */
 
 .tree-root, .tree-children {
   list-style: none;
   margin: 0;
-  padding-left: 14px;
+  padding-left: 12px;
 }
 
 .tree-root {
-  padding: 4px 0;
+  padding: 0;
 }
 
 .tree-row {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 6px;
-  padding: 2px 6px;
-  cursor: default;
-}
-
-.tree-file-row, .tree-group-row {
+  padding: 3px 8px;
   cursor: default;
 }
 
@@ -176,10 +463,16 @@ body {
   border: none;
   background: none;
   cursor: pointer;
-  width: 14px;
+  width: 12px;
+  flex: 0 0 12px;
   padding: 0;
-  font-size: 10px;
-  color: #57606a;
+  font-size: 9px;
+  color: var(--color-fg-faint);
+  align-self: center;
+}
+
+.toggle-btn:hover {
+  color: var(--color-fg);
 }
 
 .tree-label {
@@ -190,70 +483,176 @@ body {
 }
 
 .tree-badge {
-  color: #57606a;
+  color: var(--color-fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
   font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
 }
 
 .tree-badge.all-checked {
-  color: #1a7f37;
-  font-weight: 600;
+  color: var(--color-accent);
+  font-weight: 500;
 }
 
+/* Level 1: file. Proportional sans, semibold, directory in a dimmer shade
+ * than the filename so a single line reads as path + emphasis. */
+.tree-file-row .tree-label {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--color-fg);
+}
+
+.tree-file-row .tree-dir {
+  color: var(--color-fg-muted);
+  font-weight: 400;
+}
+
+.tree-file-row .tree-name {
+  color: var(--color-fg);
+}
+
+/* Thin progress rail under file / function rows -- addendum: "還剩多少沒看"
+ * should be scannable, not read off a small grey counter. */
+.tree-progress {
+  height: 2px;
+  border-radius: 1px;
+  background: var(--color-track);
+  margin: 0 8px 4px 8px;
+  overflow: hidden;
+}
+
+.tree-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--color-accent);
+  border-radius: 1px;
+  transition: width var(--transition-normal);
+}
+
+/* Level 2: function. Monospace medium, one indent step in, visually
+ * smaller than the file row above it. */
+.tree-group-row .tree-label {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--color-fg-dim);
+}
+
+/* Level 3: change point. Monospace regular, smallest, tabular numerals so
+ * the line-range column doesn't jitter as digits change. */
 .tree-changepoint {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 6px 2px 20px;
+  padding: 3px 8px 3px 22px;
   cursor: pointer;
-}
-
-.tree-changepoint:hover {
-  background: #f6f8fa;
-}
-
-.tree-changepoint.current {
-  background: #ddf4ff;
+  border-left: 3px solid transparent;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .tree-changepoint .tree-label {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-fg-ghost);
+}
+
+.tree-changepoint:hover {
+  background: var(--color-panel);
+}
+
+/* Current must read stronger than hover (keyboard-first requirement). */
+.tree-changepoint.current {
+  background: var(--color-panel);
+  border-left-color: var(--color-accent);
+}
+
+.tree-changepoint.current .tree-label {
+  color: var(--color-fg);
 }
 
 /* ---------------------------------------------------------------------- */
 /* Right pane: change point containers                                     */
+/*                                                                          */
+/* Status is expressed as a 3px left rail, not a full border/box, so the   */
+/* horizontal space goes to code instead of chrome. Four states:           */
+/*   unread            -> rail = ghost color                               */
+/*   current            -> rail = accent, body = panel surface             */
+/*   read               -> whole block opacity .55, rail stays accent      */
+/*   current AND read   -> rail full strength, body still dimmed           */
 /* ---------------------------------------------------------------------- */
 
 #changepoints-root {
-  padding: 8px 16px;
+  padding: 6px 12px;
 }
 
 .changepoint {
-  border: 1px solid #d0d7de;
-  border-radius: 6px;
-  margin-bottom: 12px;
-  scroll-margin-top: 8px;
+  border-left: 3px solid var(--color-rail-unread);
+  border-radius: 0 4px 4px 0;
+  margin-bottom: 8px;
+  scroll-margin-top: 4px;
+  background: transparent;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
-.changepoint.current {
-  border-color: #0969da;
-  box-shadow: 0 0 0 1px #0969da;
-}
-
-/* Checked change points dim as a whole block; current (see above) and
- * checked are independent classes and can both apply at once. */
+/* Read (checked, not current): rail dims toward the background instead of
+ * showing full-strength accent, and the content itself dims too -- opacity
+ * is applied to the header/content children rather than to .changepoint
+ * itself, specifically so the "current + read" combination below can keep
+ * the rail at full brightness while the body still fades. */
 .changepoint.checked {
+  border-left-color: var(--color-rail-read);
+}
+
+.changepoint.checked .changepoint-header,
+.changepoint.checked .changepoint-content {
   opacity: 0.55;
 }
 
+/* Current: rail full accent, panel background, content at full strength --
+ * this must read stronger than mouse hover (keyboard-first requirement). */
+.changepoint.current {
+  border-left-color: var(--color-rail-current);
+  background: var(--color-panel);
+}
+
+/* Current + read: both states hold simultaneously. Rail stays full accent
+ * (overrides the dimmed .checked rail above); content still visibly fades,
+ * just less than the read-only case, so "current" remains legible. */
+.changepoint.current.checked {
+  border-left-color: var(--color-rail-current-read);
+}
+
+.changepoint.current.checked .changepoint-header,
+.changepoint.current.checked .changepoint-content {
+  opacity: 0.75;
+}
+
 .changepoint-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 10px;
-  background: #f6f8fa;
-  border-bottom: 1px solid #d0d7de;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  padding: 5px 10px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-fg-dim);
+}
+
+.changepoint.current .changepoint-header {
+  background: var(--color-panel);
+  color: var(--color-fg);
+}
+
+.changepoint-label {
+  font-variant-numeric: tabular-nums;
 }
 
 .changepoint-content {
@@ -263,8 +662,9 @@ body {
 
 .empty-state {
   margin: 24px;
-  color: #57606a;
+  color: var(--color-fg-muted);
   font-style: italic;
+  font-size: 13px;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -274,16 +674,18 @@ body {
 /* Prism's token colors live on .diff-code-text's children -- the text     */
 /* layer -- so the two compose instead of fighting. We deliberately don't  */
 /* tag any element with a "language-*" class: Prism's own theme CSS keys   */
-/* an opaque background off `[class*="language-"]`, which would sit on    */
-/* top of and hide the diff-row background. Prism.highlight() doesn't      */
-/* need that class to work -- it's only used by Prism's own autoloader.    */
+/* off `[class*="language-"]`, which would sit on top of and hide the      */
+/* diff-row background. Prism.highlight() doesn't need that class to work  */
+/* -- it's only used by Prism's own autoloader. Row tints are kept at low  */
+/* opacity (~12%, via the --color-*-wash tokens) specifically so Prism's   */
+/* token colors stay legible on top instead of being washed out.           */
 /* ---------------------------------------------------------------------- */
 
 .diff-unified,
 .diff-sidebyside {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
 }
 
 .diff-row {
@@ -291,11 +693,11 @@ body {
 }
 
 .diff-row-add {
-  background: #e6ffec;
+  background: var(--color-accent-wash);
 }
 
 .diff-row-del {
-  background: #ffebe9;
+  background: var(--color-destructive-wash);
 }
 
 .diff-row-ctx {
@@ -303,37 +705,40 @@ body {
 }
 
 .diff-row-empty {
-  background: #f6f8fa;
+  background: var(--color-track);
 }
 
 .diff-gutter {
-  flex: 0 0 44px;
+  flex: 0 0 42px;
   text-align: right;
-  padding: 0 6px;
-  color: #8c959f;
+  padding: 0 8px;
+  color: var(--color-fg-faint);
   user-select: none;
-  border-right: 1px solid rgba(27, 31, 36, 0.06);
+  border-right: 1px solid var(--color-border);
+  font-variant-numeric: tabular-nums;
 }
 
 .diff-marker {
-  flex: 0 0 18px;
+  flex: 0 0 16px;
   text-align: center;
-  color: #57606a;
+  color: var(--color-fg-muted);
   user-select: none;
 }
 
 .diff-row-add .diff-marker {
-  color: #1a7f37;
+  color: var(--color-accent);
 }
 
 .diff-row-del .diff-marker {
-  color: #cf222e;
+  color: var(--color-destructive);
 }
 
 .diff-code {
   flex: 1 1 auto;
+  padding-left: 8px;
   padding-right: 8px;
   white-space: pre;
+  color: var(--code-fg);
 }
 
 .diff-sidebyside {
@@ -341,12 +746,19 @@ body {
   align-items: flex-start;
 }
 
+/* min-width: 0 lets each column shrink below its content's natural width
+ * instead of ballooning past 50% when a line is very long -- without it a
+ * single long line on one side stretches that column (and the whole
+ * content area scrolls horizontally as one unit) instead of the two
+ * columns staying aligned and each scrolling its own overflow. */
 .diff-side {
   flex: 1 1 50%;
+  min-width: 0;
+  overflow-x: auto;
 }
 
 .diff-side-left {
-  border-right: 1px solid #d0d7de;
+  border-right: 1px solid var(--color-border);
 }
 
 /* Neutralize the default Prism theme's translucent token backgrounds so
@@ -356,4 +768,79 @@ body {
 .diff-code .token.entity,
 .diff-code .token.url {
   background: none;
+}
+
+/* Map Prism's generic token classes onto the semantic code-token colors
+ * defined in :root, so highlighting stays legible in both themes and
+ * never hardcodes a raw hex here. */
+.diff-code .token.keyword,
+.diff-code .token.selector,
+.diff-code .token.important,
+.diff-code .token.atrule {
+  color: var(--code-keyword);
+}
+
+.diff-code .token.function,
+.diff-code .token.class-name {
+  color: var(--code-function);
+}
+
+.diff-code .token.number,
+.diff-code .token.boolean,
+.diff-code .token.constant {
+  color: var(--code-number);
+}
+
+.diff-code .token.string,
+.diff-code .token.attr-value {
+  color: var(--code-string);
+}
+
+.diff-code .token.comment {
+  color: var(--code-comment);
+  font-style: italic;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Footer: persistent keyboard shortcut hint bar (addendum: keyboard is a  */
+/* first-class input method here, unlike a typical web page, and the old  */
+/* UI gave no indication of that at all). Purely informational.           */
+/* ---------------------------------------------------------------------- */
+
+#shortcut-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-fg-faint);
+}
+
+#shortcut-bar .shortcut {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+#shortcut-bar kbd {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-fg-dim);
+  background: var(--color-track);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 3px;
+  padding: 1px 5px;
+  line-height: 1.4;
+}
+
+#shortcut-bar .shortcut-help {
+  margin-left: auto;
+  color: var(--color-fg-dim);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 4px;
+  padding: 1px 7px;
 }
