@@ -53,13 +53,13 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 - **Tier**: 1
 - **Touches**: `functions.js`, `test/functions.test.js`
 - **Acceptance**:
-  - [ ] JS 檔回傳各最外層具名 function 的正確起訖行
-  - [ ] 內部 closure / callback 不產生額外項目
-  - [ ] `.css` / `.java` / `.jsp` 等未知副檔名回 `[]`
-  - [ ] 語法錯誤的 JS 檔不拋例外，降級回 `[]`
-  - [ ] 涵蓋 function declaration、`X.prototype.y = function`、class method、
+  - [x] JS 檔回傳各最外層具名 function 的正確起訖行
+  - [x] 內部 closure / callback 不產生額外項目
+  - [x] `.css` / `.java` / `.jsp` 等未知副檔名回 `[]`
+  - [x] 語法錯誤的 JS 檔不拋例外，降級回 `[]`
+  - [x] 涵蓋 function declaration、`X.prototype.y = function`、class method、
         `const f = () =>` 等具名形式
-- **Status**: Pending
+- **Status**: Completed (`dfb91d6`..`2d33f77`)
 
 ### repo-config
 - **Spec 章節**: 多 repo 與設定 — `config.js`
@@ -227,8 +227,8 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 
 | Status | Count |
 |--------|-------|
-| Pending | 10 |
+| Pending | 9 |
 | In Progress | 0 |
-| Completed | 1 |
+| Completed | 2 |
 | Failed | 0 |
 | Total | 11 |
