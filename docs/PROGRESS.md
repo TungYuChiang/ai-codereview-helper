@@ -153,12 +153,12 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 - **Tier**: 2
 - **Touches**: `public/index.html`, `public/app.js`, `public/style.css`
 - **Acceptance**:
-  - [ ] repo 下拉可切換，切換後重新載入該 repo 的 diff
-  - [ ] base / target picker 可選 ref，target 另有 Working Tree 選項
-  - [ ] 選 Working Tree 時顯示「diff 會隨編輯而變、勾會失效」提示
-  - [ ] 左樹三層正確顯示，各層 `已看/總數` 正確加總
-  - [ ] 點左樹捲到右側對應變更點；右側捲動時左樹高亮跟隨
-- **Status**: Pending
+  - [x] repo 下拉可切換，切換後重新載入該 repo 的 diff
+  - [x] base / target picker 可選 ref，target 另有 Working Tree 選項
+  - [x] 選 Working Tree 時顯示「diff 會隨編輯而變、勾會失效」提示
+  - [x] 左樹三層正確顯示，各層 `已看/總數` 正確加總
+  - [x] 點左樹捲到右側對應變更點；右側捲動時左樹高亮跟隨
+- **Status**: Completed (`856d483`)
 
 ### diff-render
 - **Spec 章節**: 畫面 / 版面 — diff 呈現
@@ -227,8 +227,8 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 
 | Status | Count |
 |--------|-------|
-| Pending | 5 |
+| Pending | 4 |
 | In Progress | 0 |
-| Completed | 6 |
+| Completed | 7 |
 | Failed | 0 |
 | Total | 11 |
