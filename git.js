@@ -89,10 +89,18 @@ export async function getFileContent(repoPath, ref, filePath) {
 
   try {
     return await runGit(repoPath, ['show', `${ref}:${filePath}`]);
-  } catch {
-    // git show 對「檔案不存在於該 ref」跟其他失敗都會 non-zero exit；
-    // 依照契約，這裡一律視為「檔案不存在」回傳 null。
-    return null;
+  } catch (err) {
+    // git show 對「檔案不存在於該 ref」會用特定的 stderr 訊息表示：
+    //   fatal: path '<p>' does not exist in '<ref>'
+    //   fatal: path '<p>' exists on disk, but not in '<ref>'
+    // 只有這兩種情況視為「檔案不存在」回傳 null；其餘失敗（無效的 ref、
+    // repo 路徑錯誤、repo 損毀等）必須照契約拋出可讀的 Error，交給上層處理。
+    const message = err instanceof Error ? err.message : String(err);
+    if (/path '.*' does not exist in '.*'/.test(message) ||
+        /path '.*' exists on disk, but not in '.*'/.test(message)) {
+      return null;
+    }
+    throw err;
   }
 }
 

@@ -328,7 +328,17 @@ describe('getDiff', () => {
   test('throws a readable error when git fails', async () => {
     const repo = await makeTempRepo();
     try {
-      await assert.rejects(() => getDiff(repo, 'no-such-ref', null), /Error/);
+      await assert.rejects(
+        () => getDiff(repo, 'no-such-ref', null),
+        (err) => {
+          assert.ok(err instanceof Error);
+          // Message must name the failing git invocation and carry git's stderr text,
+          // not just be a generic Error.
+          assert.match(err.message, /^git diff no-such-ref failed:/);
+          assert.match(err.message, /no-such-ref/);
+          return true;
+        },
+      );
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
@@ -393,6 +403,39 @@ describe('getFileContent', () => {
 
       const content = await getFileContent(repo, 'HEAD', 'does-not-exist.txt');
       assert.equal(content, null);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('returns null when the file exists on disk but not in the given ref', async () => {
+    const repo = await makeTempRepo();
+    try {
+      await writeFile(join(repo, 'uncommitted.txt'), 'not committed\n');
+
+      const content = await getFileContent(repo, 'HEAD', 'uncommitted.txt');
+      assert.equal(content, null);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('throws a readable error when the ref is invalid, instead of returning null', async () => {
+    const repo = await makeTempRepo();
+    try {
+      await writeFile(join(repo, 'file.txt'), 'content\n');
+      await git(repo, ['add', 'file.txt']);
+      await git(repo, ['commit', '-q', '-m', 'add file']);
+
+      await assert.rejects(
+        () => getFileContent(repo, 'no-such-ref', 'file.txt'),
+        (err) => {
+          assert.ok(err instanceof Error);
+          assert.match(err.message, /^git show no-such-ref:file\.txt failed:/);
+          assert.match(err.message, /no-such-ref/);
+          return true;
+        },
+      );
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
