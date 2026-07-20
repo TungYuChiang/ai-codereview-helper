@@ -232,6 +232,33 @@ body {
   color: var(--color-fg);
 }
 
+/* Sidebar collapse toggle -- always present in the top bar regardless of
+ * collapsed state, so "an obvious way back" (brief) never depends on the
+ * sidebar itself being visible. Same icon-button treatment as
+ * #add-repo-toggle for visual consistency, no new tokens. */
+#sidebar-toggle-btn {
+  cursor: pointer;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-panel);
+  color: var(--color-fg-dim);
+  font-size: 12px;
+  line-height: 1;
+  padding: 0;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+#sidebar-toggle-btn:hover {
+  border-color: var(--color-accent);
+  color: var(--color-fg);
+}
+
 #add-repo-form {
   display: flex;
   align-items: center;
@@ -498,9 +525,21 @@ input[type="checkbox"]:checked::after {
 #tree-pane {
   flex: 0 0 268px;
   overflow-y: auto;
+  overflow-x: hidden;
   border-right: 1px solid var(--color-border);
   background: var(--color-bg);
   padding: 6px 0;
+  transition: flex-basis var(--transition-normal), padding var(--transition-fast);
+}
+
+/* Sidebar collapse -- flex-basis 0 hands the width straight to #main-pane
+ * (flex: 1 1 auto below already grows to fill it, no extra rule needed
+ * there). Class lives on #body, toggled by app.js / the `b` shortcut. */
+#body.sidebar-collapsed #tree-pane {
+  flex-basis: 0;
+  padding: 0;
+  border-right: none;
+  overflow: hidden;
 }
 
 #main-pane {
@@ -522,6 +561,17 @@ input[type="checkbox"]:checked::after {
 
 .tree-root {
   padding: 0;
+}
+
+/* Nesting guide -- a hairline rule down the left edge of every nested level
+ * (file's children = functions, function's children = change points). This
+ * is the one signal that survives the brief's "shrink until text is
+ * illegible" test even when weight/typeface differences blur out: a
+ * continuous vertical line under a file marks its extent, and a second,
+ * further-indented line under a function marks its own extent inside that.
+ * No new token -- reuses the existing hairline separator color. */
+.tree-children {
+  border-left: 1px solid var(--color-border);
 }
 
 .tree-row {
@@ -568,8 +618,42 @@ input[type="checkbox"]:checked::after {
   font-weight: 500;
 }
 
+/* File blocks get breathing room between them (addendum: "上下留白" for the
+ * container level) -- skip the very first file so the tree doesn't start
+ * with a dangling gap. */
+.tree-file + .tree-file {
+  margin-top: 6px;
+}
+
+/* Sticky file header -- wraps the file row + its progress rail (built by
+ * renderFileNode in app.js) so both stay pinned together while its function
+ * rows scroll underneath. This is the addendum's specifically-called-out
+ * fix for the 59-change-point file: sticking at the top of #tree-pane's own
+ * scroll container means whichever file you're scrolled into stays labeled.
+ * Siblings each get their own `position: sticky; top: 0`, so this is plain
+ * CSS stacking -- no scroll-driven JS is needed for the next file's header
+ * to push the previous one off. Solid background + border + z-index above
+ * the plain group/changepoint rows so it visually occludes what scrolls
+ * under it instead of text bleeding through. */
+.tree-file-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
 /* Level 1: file. Proportional sans, semibold, directory in a dimmer shade
- * than the filename so a single line reads as path + emphasis. */
+ * than the filename so a single line reads as path + emphasis. Taller
+ * padding than the function/change-point rows below it -- a file is a
+ * container, not a peer list item, and needs to read as one even when the
+ * type itself is too small to read (addendum's "縮到看不清文字" test). */
+.tree-file-row {
+  padding: 6px 8px 4px 8px;
+}
+
 .tree-file-row .tree-label {
   font-family: var(--font-sans);
   font-weight: 600;

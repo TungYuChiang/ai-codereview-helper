@@ -14,6 +14,8 @@
 // DOM references
 // ===========================================================================
 
+const sidebarToggleBtnEl = document.getElementById('sidebar-toggle-btn');
+
 const repoSelectEl = document.getElementById('repo-select');
 const addRepoToggleEl = document.getElementById('add-repo-toggle');
 const addRepoFormEl = document.getElementById('add-repo-form');
@@ -70,6 +72,11 @@ const appState = {
   // null); isEditing is the boolean the next unit should actually check.
   isEditing: false,
   editingKey: null,
+
+  // Sidebar collapse -- whole #tree-pane, not any individual tree node (that
+  // is appState.collapsed above). Restored from localStorage on init, see
+  // SIDEBAR_COLLAPSED_KEY below.
+  sidebarCollapsed: false,
 };
 
 // DOM index rebuilt every time the tree is (re)rendered. Not part of
@@ -197,6 +204,33 @@ function setOrRemove(key, value) {
   if (value) localStorage.setItem(key, value);
   else localStorage.removeItem(key);
 }
+
+// ===========================================================================
+// Sidebar collapse -- whole #tree-pane, toggled from the top-bar button, the
+// `b` keyboard shortcut (see handleGlobalKeydown), and restored from
+// localStorage on init (see init() at the bottom of this file). Purely a
+// class toggle + a couple of attribute/label updates -- no tree rebuild, no
+// change to appState.collapsed (which is the per-node fold state and is
+// untouched by this).
+// ===========================================================================
+
+const SIDEBAR_COLLAPSED_KEY = 'lcr.sidebarCollapsed';
+
+function setSidebarCollapsed(collapsed) {
+  appState.sidebarCollapsed = collapsed;
+  bodyEl.classList.toggle('sidebar-collapsed', collapsed);
+  sidebarToggleBtnEl.textContent = collapsed ? '▸' : '◂'; // ▸ / ◂
+  sidebarToggleBtnEl.setAttribute('aria-expanded', String(!collapsed));
+  sidebarToggleBtnEl.setAttribute('aria-label', collapsed ? 'show sidebar' : 'hide sidebar');
+  sidebarToggleBtnEl.title = collapsed ? 'Show sidebar (b)' : 'Hide sidebar (b)';
+  localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
+}
+
+function toggleSidebar() {
+  setSidebarCollapsed(!appState.sidebarCollapsed);
+}
+
+sidebarToggleBtnEl.addEventListener('click', toggleSidebar);
 
 // ===========================================================================
 // Top bar: repo picker + add-repo form
@@ -501,6 +535,13 @@ function buildProgressRail(checked, total) {
 
 function renderFileNode(file) {
   const li = createEl('li', { className: 'tree-file' });
+
+  // File row + its progress rail live together in one sticky header (see
+  // .tree-file-header in style.css) -- addendum: the file level is a
+  // container, and a container should stay labeled while its contents
+  // scroll past. Everything sticks as one unit so the progress rail stays
+  // visible too, not just the name.
+  const header = createEl('div', { className: 'tree-file-header' });
   const row = createEl('div', { className: 'tree-row tree-file-row' });
 
   const collapseId = `file:${file.path}`;
@@ -515,10 +556,11 @@ function renderFileNode(file) {
   if (file.allChecked) badge.classList.add('all-checked');
 
   row.append(toggleBtn, label, badge);
-  li.appendChild(row);
+  header.appendChild(row);
 
   const { track: progressTrack, fill: progressFill } = buildProgressRail(file.checked, file.total);
-  li.appendChild(progressTrack);
+  header.appendChild(progressTrack);
+  li.appendChild(header);
 
   const childUl = createEl('ul', { className: 'tree-children' });
   childUl.hidden = collapsed;
@@ -1587,6 +1629,10 @@ function handleGlobalKeydown(e) {
       e.preventDefault();
       handleToggleCurrentFold();
       break;
+    case 'b':
+      e.preventDefault();
+      toggleSidebar();
+      break;
     case '1':
       e.preventDefault();
       setViewMode('unified');
@@ -1647,6 +1693,7 @@ const SHORTCUT_TABLE = [
   ['u', 'jump to next unread change point'],
   ['c', 'edit comment on the current change point'],
   ['f', 'collapse / expand the current function'],
+  ['b', 'collapse / expand the whole sidebar'],
   ['1 / 2', 'unified / side-by-side view'],
   ['?', 'toggle this help'],
   ['space', 'browser scroll — not intercepted'],
@@ -1736,6 +1783,7 @@ if (shortcutHelpSourceEl) {
 async function init() {
   restoreSavedSelection();
   setViewMode(appState.viewMode);
+  setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1');
   await loadRepos();
 
   if (appState.repos.length === 0) {

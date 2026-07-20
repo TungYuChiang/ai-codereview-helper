@@ -9,6 +9,15 @@
 <body>
   <div id="app">
     <header id="topbar">
+      <button
+        id="sidebar-toggle-btn"
+        type="button"
+        aria-label="hide sidebar"
+        aria-controls="tree-pane"
+        aria-expanded="true"
+        title="Toggle sidebar (b)"
+      >&#9666;</button>
+
       <div class="topbar-group">
         <select id="repo-select" aria-label="repo"></select>
         <button id="add-repo-toggle" type="button" title="Add repo">+</button>
@@ -56,6 +65,7 @@
       <span class="shortcut"><kbd>u</kbd> next unread</span>
       <span class="shortcut"><kbd>c</kbd> comment</span>
       <span class="shortcut"><kbd>f</kbd> collapse</span>
+      <span class="shortcut"><kbd>b</kbd> sidebar</span>
       <span class="shortcut-help">?</span>
     </footer>
   </div>
