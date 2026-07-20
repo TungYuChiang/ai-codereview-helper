@@ -1,0 +1,19 @@
+{
+  "name": "local-code-review",
+  "version": "0.1.0",
+  "description": "Local branch code review tool with per-change-point checkmarks and comments",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.js'"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "acorn": "^8.17.0",
+    "prismjs": "^1.30.0"
+  }
+}
