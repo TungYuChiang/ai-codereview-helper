@@ -30,6 +30,8 @@ const workingTreeHintEl = document.getElementById('working-tree-hint');
 const viewUnifiedBtnEl = document.getElementById('view-unified-btn');
 const viewSideBySideBtnEl = document.getElementById('view-sidebyside-btn');
 
+const codeThemeSelectEl = document.getElementById('code-theme-select');
+
 const statsBadgeEl = document.getElementById('stats-badge');
 const errorBannerEl = document.getElementById('error-banner');
 
@@ -58,6 +60,11 @@ const appState = {
   base: null,           // currently selected base ref
   target: null,         // currently selected target ref, or 'WORKING_TREE'
   viewMode: 'unified',  // 'unified' | 'side-by-side' -- diff-rendering unit reads this
+  codeTheme: 'default', // one of CODE_THEMES below -- mirrors the <html data-code-theme>
+                         // attribute (the actual source of truth for rendering; nothing
+                         // reads this field back, it's kept only for the same reason
+                         // viewMode/sidebarCollapsed are: one place to inspect current UI
+                         // state without digging through the DOM)
   tree: null,           // { files, orphans, stats } from GET /api/diff, mutated in place
   order: [],            // flattened change-point ids, in tree/scroll order
   currentKey: null,     // id of the currently selected/highlighted change point
@@ -406,6 +413,36 @@ function setViewMode(mode) {
 
 viewUnifiedBtnEl.addEventListener('click', () => setViewMode('unified'));
 viewSideBySideBtnEl.addEventListener('click', () => setViewMode('side-by-side'));
+
+// ===========================================================================
+// Top bar: code-area color theme (ui-code-themes unit).
+//
+// Deliberately the cheapest possible "switch" in this file: a theme is
+// nothing but a set of CSS custom properties scoped to
+// :root[data-code-theme="..."] (see style.css). Applying one is one
+// attribute write -- no re-render, no DOM rebuild, no refetch, so scroll
+// position, tree-scroll-spy state, and checked/current change-point state
+// are untouched by construction, not by care taken here. Contrast with
+// setViewMode() above, which *does* need to rebuild each change point's
+// content because unified vs. side-by-side is a structural layout change,
+// not a color change.
+// ===========================================================================
+
+const CODE_THEMES = [
+  'default', 'github-dark', 'one-dark', 'dracula', 'monokai', 'nord',
+  'github-light', 'solarized-light',
+];
+const CODE_THEME_KEY = 'lcr.codeTheme';
+
+function setCodeTheme(theme) {
+  const value = CODE_THEMES.includes(theme) ? theme : 'default';
+  appState.codeTheme = value;
+  document.documentElement.setAttribute('data-code-theme', value);
+  codeThemeSelectEl.value = value;
+  localStorage.setItem(CODE_THEME_KEY, value);
+}
+
+codeThemeSelectEl.addEventListener('change', () => setCodeTheme(codeThemeSelectEl.value));
 
 // ===========================================================================
 // Loading pipeline: repos -> refs -> diff
@@ -1781,6 +1818,7 @@ if (shortcutHelpSourceEl) {
 // ===========================================================================
 
 async function init() {
+  setCodeTheme(localStorage.getItem(CODE_THEME_KEY) || 'default');
   restoreSavedSelection();
   setViewMode(appState.viewMode);
   setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1');

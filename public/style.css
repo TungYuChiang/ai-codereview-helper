@@ -109,6 +109,47 @@
   --code-string: #c3e88d;
   --code-comment: #64748b;
 
+  /* -- diff row tint + marker, code-theme-scoped --
+     Deliberately separate from --color-accent(-wash)/--color-destructive(-wash)
+     above: those are shared with shell chrome (buttons, checkboxes, tree
+     badges, focus ring, error banner...) which a code theme must NOT touch
+     (ui-code-themes brief: theme only affects the code area). These four
+     default to today's values so the "default" code theme -- the unset/
+     [data-code-theme="default"] case -- renders pixel-identical to before
+     this unit. Each :root[data-code-theme="..."] block further down
+     overrides only these four plus the five --code-* tokens above. */
+  --code-diff-add-bg: rgba(34, 197, 94, 0.12);
+  --code-diff-del-bg: rgba(239, 68, 68, 0.12);
+  --code-diff-add-marker: #22c55e;
+  --code-diff-del-marker: #ef4444;
+
+  /* -- code area backdrop, code-theme-scoped --
+     Context rows (.diff-row-ctx) are transparent, so whatever sits behind
+     the diff container shows through. The default theme leaves this
+     transparent -- exactly today's behavior, where that backdrop is the
+     shell's own --color-panel/--color-bg, itself already prefers-color-
+     scheme-aware. That only works because the default theme's --code-fg is
+     one of the *shell* tokens too, so the two are defined to always match.
+
+     Every *explicit* theme below overrides both to its own real editor
+     background instead of leaving them transparent -- this was tried first
+     and found broken: "transparent" only reads correctly against a shell
+     that happens to be the same brightness as the theme. A dark theme's
+     light --code-fg is fine against this app's normally-dark shell, but the
+     shell itself follows the OS (prefers-color-scheme), and OS-light +
+     Dracula/etc. turns that light --code-fg invisible against the
+     now-light shell showing through. Giving every explicit theme its own
+     opaque backdrop decouples it from shell/OS state entirely, which is
+     what "an explicitly chosen theme wins regardless of OS light/dark"
+     (see the block comment further down) actually requires in practice,
+     not just for token colors but for what they sit on. Confirmed by
+     screenshot -- see dev-log. --code-empty-bg is the side-by-side "no line
+     on this side" filler (.diff-row-empty); each explicit theme derives it
+     from its own fg/bg via color-mix() rather than the shell's track color,
+     for the same reason. */
+  --code-bg: transparent;
+  --code-empty-bg: var(--color-track);
+
   /* -- motion -- */
   --transition-fast: 150ms ease;
   --transition-normal: 200ms ease;
@@ -147,7 +188,185 @@
     --code-number: #c2410c;
     --code-string: #15803d;
     --code-comment: #78838c;
+
+    --code-diff-add-bg: rgba(22, 163, 74, 0.12);
+    --code-diff-del-bg: rgba(220, 38, 38, 0.1);
+    --code-diff-add-marker: #16a34a;
+    --code-diff-del-marker: #dc2626;
   }
+}
+
+/* ---------------------------------------------------------------------- */
+/* Code-area color themes -- ui-code-themes unit.                          */
+/*                                                                          */
+/* Each theme is a flat set of --code-* custom-property overrides on       */
+/* :root[data-code-theme="..."], nothing else: no per-theme Prism          */
+/* stylesheet (that reintroduces the opaque-background problem the         */
+/* diff-render unit already solved -- see the block comment above          */
+/* .diff-code .token.operator further down), no new selectors, no JS       */
+/* DOM rebuild on switch (app.js just flips the attribute).                */
+/*                                                                          */
+/* These rules sit outside any @media block on purpose. `:root[data-code-  */
+/* theme="x"]` (attribute selector, specificity 0,2,0) is more specific     */
+/* than the bare `:root` used inside the prefers-color-scheme:light block   */
+/* above (specificity 0,1,0), so an explicitly chosen theme always wins     */
+/* over the OS light/dark preference regardless of source order -- this is  */
+/* what makes "OS light + Dracula" and "OS dark + Solarized Light" both     */
+/* render as the chosen theme instead of fighting the media query.          */
+/*                                                                          */
+/* Colors are sourced from each theme's own canonical implementation       */
+/* (official theme repo / VS Code theme JSON / Prism's own theme file --    */
+/* see dev-log for exact sources), not approximated from memory. Diff       */
+/* add/del tints reuse each theme's own green/red at low opacity so Prism's */
+/* token colors stay legible on top (same rule as the default theme);       */
+/* light themes got their own opacity pass rather than inheriting the dark  */
+/* value -- see dev-log for what that check found.                          */
+/* ---------------------------------------------------------------------- */
+
+/* GitHub Dark -- sourced from GitHub's own "GitHub Dark Default" VS Code
+   theme (github/vscode-github-theme -> primer/github-vscode-theme), i.e.
+   github.com's actual current dark-mode diff colors, not the older
+   VS Code marketplace "GitHub Theme" classic variant. */
+:root[data-code-theme="github-dark"] {
+  --code-fg: #e6edf3;
+  --code-keyword: #ff7b72;
+  --code-function: #d2a8ff;
+  --code-number: #79c0ff;
+  --code-string: #a5d6ff;
+  --code-comment: #8b949e;
+  --code-bg: #0d1117;
+  --code-empty-bg: color-mix(in srgb, var(--code-fg) 10%, var(--code-bg));
+
+  --code-diff-add-bg: rgba(63, 185, 80, 0.15);
+  --code-diff-del-bg: rgba(248, 81, 73, 0.15);
+  --code-diff-add-marker: #3fb950;
+  --code-diff-del-marker: #f85149;
+}
+
+/* GitHub Light -- same source family as github-dark, light variant
+   ("GitHub Light Default"), i.e. github.com's light-mode diff colors. */
+:root[data-code-theme="github-light"] {
+  --code-fg: #1f2328;
+  --code-keyword: #cf222e;
+  --code-function: #8250df;
+  --code-number: #0550ae;
+  --code-string: #0a3069;
+  --code-comment: #6e7781;
+  /* real editor.background from the same source -- required, not cosmetic:
+     without it this theme's dark --code-fg sits on the app's dark shell
+     panel and is unreadable (checked against a real screenshot, see
+     dev-log). --code-empty-bg = GitHub's own canvas.subtle. */
+  --code-bg: #ffffff;
+  --code-empty-bg: #f6f8fa;
+
+  --code-diff-add-bg: rgba(26, 127, 55, 0.14);
+  --code-diff-del-bg: rgba(207, 34, 46, 0.12);
+  --code-diff-add-marker: #1a7f37;
+  --code-diff-del-marker: #cf222e;
+}
+
+/* One Dark -- Atom's original one-dark-syntax hues (mono-1/3, hue-2/3/4/6),
+   the same palette Prism's own "one-dark" theme ports. Diff add/del reuse
+   the theme's own string-green / tag-red hues (One Dark has no single
+   "official" diff color; this is the same convention the theme's own
+   editor UI packages use). */
+:root[data-code-theme="one-dark"] {
+  --code-fg: #abb2bf;
+  --code-keyword: #c678dd;
+  --code-function: #61afef;
+  --code-number: #d19a66;
+  --code-string: #98c379;
+  --code-comment: #5c6370;
+  --code-bg: #282c34;
+  --code-empty-bg: color-mix(in srgb, var(--code-fg) 10%, var(--code-bg));
+
+  --code-diff-add-bg: rgba(152, 195, 121, 0.16);
+  --code-diff-del-bg: rgba(224, 108, 117, 0.16);
+  --code-diff-add-marker: #98c379;
+  --code-diff-del-marker: #e06c75;
+}
+
+/* Dracula -- official palette + the canonical construct->color mapping from
+   draculatheme.com/spec and the dracula/visual-studio-code source (keyword
+   = pink, function = green, number/constant = purple, string = yellow,
+   comment = comment-gray; markup.inserted/deleted = green/red). */
+:root[data-code-theme="dracula"] {
+  --code-fg: #f8f8f2;
+  --code-keyword: #ff79c6;
+  --code-function: #50fa7b;
+  --code-number: #bd93f9;
+  --code-string: #f1fa8c;
+  --code-comment: #6272a4;
+  --code-bg: #282a36;
+  --code-empty-bg: color-mix(in srgb, var(--code-fg) 10%, var(--code-bg));
+
+  --code-diff-add-bg: rgba(80, 250, 123, 0.15);
+  --code-diff-del-bg: rgba(255, 85, 85, 0.15);
+  --code-diff-add-marker: #50fa7b;
+  --code-diff-del-marker: #ff5555;
+}
+
+/* Monokai -- VS Code's built-in "Monokai" theme (a direct port of the
+   original Wimer Hazenberg / Sublime Text monokai.tmTheme), the version
+   most widely recognized as "Monokai" today. Diff colors match its own
+   diffEditor.insertedTextBackground/removedTextBackground (blends of the
+   editor background with string-green/keyword-pink). */
+:root[data-code-theme="monokai"] {
+  --code-fg: #f8f8f2;
+  --code-keyword: #f92672;
+  --code-function: #a6e22e;
+  --code-number: #ae81ff;
+  --code-string: #e6db74;
+  --code-comment: #88846f;
+  --code-bg: #272822;
+  --code-empty-bg: color-mix(in srgb, var(--code-fg) 10%, var(--code-bg));
+
+  --code-diff-add-bg: rgba(166, 226, 46, 0.15);
+  --code-diff-del-bg: rgba(249, 38, 114, 0.15);
+  --code-diff-add-marker: #a6e22e;
+  --code-diff-del-marker: #f92672;
+}
+
+/* Nord -- nordtheme.com's own documented syntax-highlighting roles (Frost
+   nord8 for functions, nord9 for keywords, Aurora nord14/nord15 for
+   strings/numbers, Polar Night nord3 for comments) and its documented diff
+   roles (nord14 additions, nord11 deletions). */
+:root[data-code-theme="nord"] {
+  --code-fg: #d8dee9;
+  --code-keyword: #81a1c1;
+  --code-function: #88c0d0;
+  --code-number: #b48ead;
+  --code-string: #a3be8c;
+  --code-comment: #4c566a;
+  --code-bg: #2e3440;
+  --code-empty-bg: color-mix(in srgb, var(--code-fg) 10%, var(--code-bg));
+
+  --code-diff-add-bg: rgba(163, 190, 140, 0.18);
+  --code-diff-del-bg: rgba(191, 97, 106, 0.18);
+  --code-diff-add-marker: #a3be8c;
+  --code-diff-del-marker: #bf616a;
+}
+
+/* Solarized Light -- PrismJS's own official solarizedlight theme (shipped
+   in Prism core since early releases), which is itself a direct port of
+   Ethan Schoonover's original base3/base01/accent-color table. */
+:root[data-code-theme="solarized-light"] {
+  --code-fg: #657b83;
+  --code-keyword: #859900;
+  --code-function: #b58900;
+  --code-number: #268bd2;
+  --code-string: #2aa198;
+  --code-comment: #93a1a1;
+  /* base3/base2 -- same "required, not cosmetic" reasoning as github-light
+     above: this theme's dark-on-light --code-fg needs its own light
+     backdrop to be readable at all against this app's dark shell. */
+  --code-bg: #fdf6e3;
+  --code-empty-bg: #eee8d5;
+
+  --code-diff-add-bg: rgba(133, 153, 0, 0.16);
+  --code-diff-del-bg: rgba(220, 50, 47, 0.14);
+  --code-diff-add-marker: #859900;
+  --code-diff-del-marker: #dc322f;
 }
 
 * {
@@ -867,6 +1086,7 @@ input[type="checkbox"]:checked::after {
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.6;
+  background: var(--code-bg);
 }
 
 .diff-row {
@@ -874,11 +1094,11 @@ input[type="checkbox"]:checked::after {
 }
 
 .diff-row-add {
-  background: var(--color-accent-wash);
+  background: var(--code-diff-add-bg);
 }
 
 .diff-row-del {
-  background: var(--color-destructive-wash);
+  background: var(--code-diff-del-bg);
 }
 
 .diff-row-ctx {
@@ -886,7 +1106,7 @@ input[type="checkbox"]:checked::after {
 }
 
 .diff-row-empty {
-  background: var(--color-track);
+  background: var(--code-empty-bg);
 }
 
 .diff-gutter {
@@ -907,11 +1127,11 @@ input[type="checkbox"]:checked::after {
 }
 
 .diff-row-add .diff-marker {
-  color: var(--color-accent);
+  color: var(--code-diff-add-marker);
 }
 
 .diff-row-del .diff-marker {
-  color: var(--color-destructive);
+  color: var(--code-diff-del-marker);
 }
 
 .diff-code {
