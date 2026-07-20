@@ -986,7 +986,26 @@ function setHighlight(key, on) {
 // container, not the viewport, since the main pane scrolls independently.
 // ===========================================================================
 
+// Persistent intersection state, keyed by change-point id. An
+// IntersectionObserver callback only ever reports the *delta* -- targets
+// whose isIntersecting flag changed since the previous callback -- not the
+// full set of everything currently intersecting. Two change points that
+// render close together relative to the top band (rootMargin below) can
+// both be "in play" at once, but only one of them may appear in a given
+// batch (the other's state simply didn't change). Deriving the current
+// selection from the batch alone therefore silently picks whichever
+// change point happened to flip most recently, not whichever one is
+// actually topmost right now -- and that wrong pick can even be an
+// already-checked change point, which corrupts `u`'s "jump to next
+// unread" guarantee. Tracking cumulative state in this map and deriving
+// the selection from the whole map, every time, fixes that: every batch
+// updates the map, then the topmost currently-intersecting entry (by
+// boundingClientRect.top) is recomputed from the full map, not just the
+// entries the batch happened to mention.
+const intersectionState = new Map(); // key -> { isIntersecting, top }
+
 function setupScrollSpy() {
+  intersectionState.clear();
   scrollObserver = new IntersectionObserver(handleIntersections, {
     root: mainPaneEl,
     // Treat "current" as whichever change point occupies the top band of
@@ -999,12 +1018,26 @@ function setupScrollSpy() {
   }
 }
 
-function handleIntersections(entries) {
-  const visible = entries.filter((e) => e.isIntersecting);
-  if (visible.length === 0) return;
-  visible.sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-  const key = visible[0].target.dataset.key;
-  if (key) selectChangePoint(key, { scroll: false });
+function handleIntersections(batch) {
+  for (const e of batch) {
+    const key = e.target.dataset.key;
+    if (!key) continue;
+    intersectionState.set(key, {
+      isIntersecting: e.isIntersecting,
+      top: e.boundingClientRect.top,
+    });
+  }
+
+  let topKey = null;
+  let topValue = Infinity;
+  for (const [key, state] of intersectionState) {
+    if (!state.isIntersecting) continue;
+    if (state.top < topValue) {
+      topValue = state.top;
+      topKey = key;
+    }
+  }
+  if (topKey) selectChangePoint(topKey, { scroll: false });
 }
 
 // ===========================================================================
@@ -1025,6 +1058,18 @@ function renderAllComments() {
   for (const entry of dom.changePoints.values()) {
     if (!entry.commentEl) {
       const section = createEl('div', { className: 'comment-section' });
+      // Programmatically focusable (tabIndex -1) but not a Tab stop: this is
+      // where focus lands after a save/cancel (see renderCommentView's
+      // focusTrigger below), instead of on the Edit/+Comment button. Landing
+      // on an activatable <button> there means a `space` press right after
+      // saving a comment -- exactly the rhythm the brief calls out ("save a
+      // comment, then press space to keep reading") -- activates the button
+      // and reopens the editor instead of scrolling. A non-interactive
+      // container has no activation behavior, so `space` falls through to
+      // the browser's native scroll. The Edit/+Comment button itself is
+      // untouched and still reachable by tabbing through the document in
+      // order.
+      section.tabIndex = -1;
       entry.rightContainer.appendChild(section);
       entry.commentEl = section;
     }
@@ -1056,13 +1101,17 @@ function renderCommentView(entry, { focusTrigger = false } = {}) {
     body.appendChild(actions);
 
     commentEl.appendChild(body);
-    if (focusTrigger) editBtn.focus();
+    // Focus the section container, not editBtn -- see the tabIndex comment
+    // in renderAllComments for why (space-reopens-editor bug, finding 2).
+    if (focusTrigger) commentEl.focus();
   } else {
     const addBtn = createEl('button', { className: 'comment-btn comment-add-btn', text: '+ Comment' });
     addBtn.type = 'button';
     addBtn.addEventListener('click', () => enterCommentEdit(entry));
     commentEl.appendChild(addBtn);
-    if (focusTrigger) addBtn.focus();
+    // Focus the section container, not addBtn -- see the tabIndex comment
+    // in renderAllComments for why (space-reopens-editor bug, finding 2).
+    if (focusTrigger) commentEl.focus();
   }
 }
 
@@ -1408,10 +1457,20 @@ function showEmptyState() {
 // or state model is introduced here.
 // ===========================================================================
 
+// <input type="checkbox|radio|button"> does not accept text entry, so it
+// must not count as a "typing target" -- doing so left every single-key
+// shortcut dead after an ordinary mouse click on a review checkbox, until
+// focus moved elsewhere. <button> elements were never affected (tagName is
+// 'BUTTON', not 'INPUT') -- this only narrows the INPUT branch. Only
+// genuine text-entry contexts count: text-like <input> types, <textarea>,
+// and contenteditable.
+const NON_TEXT_INPUT_TYPES = new Set(['checkbox', 'radio', 'button']);
+
 function isTypingTarget(target) {
   if (!target) return false;
   const tag = target.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA') return true;
+  if (tag === 'INPUT') return !NON_TEXT_INPUT_TYPES.has(target.type);
+  if (tag === 'TEXTAREA') return true;
   return Boolean(target.isContentEditable);
 }
 
