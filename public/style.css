@@ -1,0 +1,261 @@
+/* style.css — layout shell for local-code-review.
+ * Top bar (fixed height, does not scroll) + left tree pane (own scroll) +
+ * right main pane (own scroll, the primary scroll region). */
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  color: #1b1f23;
+  background: #ffffff;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Top bar                                                                 */
+/* ---------------------------------------------------------------------- */
+
+#topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #d0d7de;
+  background: #f6f8fa;
+  flex-wrap: wrap;
+}
+
+.topbar-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ref-sep {
+  color: #6e7781;
+  padding: 0 2px;
+}
+
+#add-repo-toggle {
+  cursor: pointer;
+}
+
+#add-repo-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#add-repo-form[hidden] {
+  display: none;
+}
+
+#add-repo-input {
+  min-width: 260px;
+}
+
+.field-error {
+  color: #cf222e;
+}
+
+.hint {
+  color: #9a6700;
+  background: #fff8c5;
+  border: 1px solid #d4a72c;
+  border-radius: 4px;
+  padding: 3px 8px;
+}
+
+.view-toggle {
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.view-btn {
+  border: none;
+  background: #ffffff;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.view-btn + .view-btn {
+  border-left: 1px solid #d0d7de;
+}
+
+.view-btn.active {
+  background: #0969da;
+  color: #ffffff;
+}
+
+.stats-badge {
+  margin-left: auto;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eaeef2;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Error banner                                                            */
+/* ---------------------------------------------------------------------- */
+
+.error-banner {
+  flex: 0 0 auto;
+  background: #ffebe9;
+  color: #82071e;
+  border-bottom: 1px solid #ff8182;
+  padding: 6px 12px;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Body: tree pane + main pane, each independently scrollable              */
+/* ---------------------------------------------------------------------- */
+
+#body {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#tree-pane {
+  flex: 0 0 300px;
+  overflow-y: auto;
+  border-right: 1px solid #d0d7de;
+  background: #ffffff;
+}
+
+#main-pane {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  background: #ffffff;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Tree                                                                    */
+/* ---------------------------------------------------------------------- */
+
+.tree-root, .tree-children {
+  list-style: none;
+  margin: 0;
+  padding-left: 14px;
+}
+
+.tree-root {
+  padding: 4px 0;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  cursor: default;
+}
+
+.tree-file-row, .tree-group-row {
+  cursor: default;
+}
+
+.toggle-btn {
+  border: none;
+  background: none;
+  cursor: pointer;
+  width: 14px;
+  padding: 0;
+  font-size: 10px;
+  color: #57606a;
+}
+
+.tree-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-badge {
+  color: #57606a;
+  font-variant-numeric: tabular-nums;
+}
+
+.tree-badge.all-checked {
+  color: #1a7f37;
+  font-weight: 600;
+}
+
+.tree-changepoint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px 2px 20px;
+  cursor: pointer;
+}
+
+.tree-changepoint:hover {
+  background: #f6f8fa;
+}
+
+.tree-changepoint.current {
+  background: #ddf4ff;
+}
+
+.tree-changepoint .tree-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Right pane: change point containers                                     */
+/* ---------------------------------------------------------------------- */
+
+#changepoints-root {
+  padding: 8px 16px;
+}
+
+.changepoint {
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  scroll-margin-top: 8px;
+}
+
+.changepoint.current {
+  border-color: #0969da;
+  box-shadow: 0 0 0 1px #0969da;
+}
+
+.changepoint-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #f6f8fa;
+  border-bottom: 1px solid #d0d7de;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.changepoint-content {
+  padding: 8px 10px;
+  color: #57606a;
+}
+
+.changepoint-placeholder {
+  margin: 0;
+  font-style: italic;
+}

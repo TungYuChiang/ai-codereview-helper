@@ -3,9 +3,53 @@
 <head>
   <meta charset="utf-8" />
   <title>local-code-review</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- Placeholder: the front end is built by a later unit. -->
-  <p>local-code-review</p>
+  <div id="app">
+    <header id="topbar">
+      <div class="topbar-group">
+        <select id="repo-select" aria-label="repo"></select>
+        <button id="add-repo-toggle" type="button" title="Add repo">+</button>
+      </div>
+
+      <form id="add-repo-form" hidden>
+        <input id="add-repo-input" type="text" placeholder="/path/to/repo" autocomplete="off" />
+        <button id="add-repo-submit" type="submit">Add</button>
+        <button id="add-repo-cancel" type="button">Cancel</button>
+        <span id="add-repo-error" class="field-error"></span>
+      </form>
+
+      <div class="topbar-group">
+        <select id="base-select" aria-label="base ref"></select>
+        <span class="ref-sep">&hellip;</span>
+        <select id="target-select" aria-label="target ref"></select>
+      </div>
+
+      <span id="working-tree-hint" class="hint" hidden>
+        Working Tree: diff 會隨你編輯而變、勾會失效，這是正常行為
+      </span>
+
+      <div class="topbar-group view-toggle" role="group" aria-label="view mode">
+        <button id="view-unified-btn" type="button" class="view-btn">unified</button>
+        <button id="view-sidebyside-btn" type="button" class="view-btn">side-by-side</button>
+      </div>
+
+      <span id="stats-badge" class="stats-badge">0/0</span>
+    </header>
+
+    <div id="error-banner" class="error-banner" role="alert" hidden></div>
+
+    <div id="body">
+      <nav id="tree-pane" aria-label="change tree">
+        <ul id="tree-root" class="tree-root"></ul>
+      </nav>
+      <main id="main-pane">
+        <div id="changepoints-root"></div>
+      </main>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
 </body>
 </html>
