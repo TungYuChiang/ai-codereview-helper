@@ -4,10 +4,19 @@
 // 其餘的匯出函式負責跟 git / 檔案系統互動。
 
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile, realpath, stat } from 'node:fs/promises';
+import { join, resolve, sep } from 'node:path';
 
 const MAX_BUFFER = 1024 * 1024 * 100; // 100MB，避免大 diff 被截斷
+
+// Largest file the WORKING_TREE branch of getFileContent will buffer into
+// memory. The git-ref branch (git show) is already bounded by MAX_BUFFER
+// above; readFile has no equivalent ceiling of its own, so without this a
+// large build artifact or log file sitting in the working tree gets read
+// wholesale into a JS string before the caller's line-count cap ever gets a
+// chance to reject it. 10MB is far beyond any real source file (even a huge
+// generated types file or lockfile) while still being well under MAX_BUFFER.
+const MAX_WORKING_TREE_FILE_BYTES = 10 * 1024 * 1024; // 10MB
 
 // `--end-of-options` 告訴 git：後面的參數一律不是選項。少了它，一個以 `-`
 // 開頭的 ref（例如 `--output=/tmp/x`）會被 git 當成選項解析 —— 那就是任意
@@ -94,12 +103,7 @@ export async function getDiff(repoPath, base, target) {
  */
 export async function getFileContent(repoPath, ref, filePath) {
   if (ref === null || ref === 'WORKING_TREE') {
-    try {
-      return await readFile(join(repoPath, filePath), 'utf8');
-    } catch (err) {
-      if (err.code === 'ENOENT') return null;
-      throw err;
-    }
+    return await readWorkingTreeFile(repoPath, filePath);
   }
 
   try {
@@ -117,6 +121,70 @@ export async function getFileContent(repoPath, ref, filePath) {
         /path '.*' exists on disk, but not in '.*'/.test(message)) {
       return null;
     }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// readWorkingTreeFile — the WORKING_TREE branch of getFileContent.
+//
+// `filePath` reaching here has already been lexically checked by the caller
+// (server.js's resolveRepoRelativePath resolves `..`/`.` segments and rejects
+// anything that lands outside the repo *as a string*). That is not enough on
+// its own: `readFile` follows symlinks at the OS level, and git supports
+// tracked symlinks, so a branch containing e.g. `ln -s ~/.ssh/id_rsa
+// leak.txt` becomes a real on-disk symlink the moment it's checked out --
+// which is the ordinary thing to do before reviewing a branch. A lexically
+// contained path can still resolve, after following that symlink, to a file
+// anywhere on the filesystem.
+//
+// This is deliberately scoped to *this* branch only, not folded into a
+// shared "resolve repo-relative path" helper that both this and the git-ref
+// branch would call. The two branches need different treatment:
+//   - Here, the path is about to be read directly off disk, so the check
+//     must be against the *real*, symlink-resolved location.
+//   - The git-ref branch (`git show <ref>:<path>`) never touches the
+//     filesystem via this path at all -- it reads the git object database
+//     through a subprocess, and git itself refuses to resolve a path outside
+//     the repository for that command. Worse, applying a disk-based realpath
+//     check there would be actively wrong: a file can legitimately exist in
+//     a historical ref without existing on disk at all, and realpath()-ing
+//     it would throw ENOENT and turn a valid lookup into a false failure.
+// A single containment helper reused uncritically by both would either miss
+// the symlink case here or misfire on the other -- which is exactly the
+// shape of bug this function exists to close.
+async function readWorkingTreeFile(repoPath, filePath) {
+  const repoRoot = resolve(repoPath);
+  const candidate = resolve(repoRoot, filePath);
+
+  let realCandidate;
+  try {
+    realCandidate = await realpath(candidate);
+  } catch (err) {
+    // Covers both "never existed" and "was a symlink whose target doesn't
+    // exist" -- both are ordinary 404s to the caller, not server errors.
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+
+  const realRepoRoot = await realpath(repoRoot);
+  const withinRepo =
+    realCandidate === realRepoRoot || realCandidate.startsWith(realRepoRoot + sep);
+  if (!withinRepo) {
+    throw new Error(`path resolves outside the repository via a symlink: ${filePath}`);
+  }
+
+  const info = await stat(realCandidate);
+  if (info.size > MAX_WORKING_TREE_FILE_BYTES) {
+    throw new Error(
+      `file exceeds the ${MAX_WORKING_TREE_FILE_BYTES}-byte working-tree read limit: ${filePath}`,
+    );
+  }
+
+  try {
+    return await readFile(realCandidate, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
     throw err;
   }
 }

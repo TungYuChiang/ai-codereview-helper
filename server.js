@@ -381,19 +381,31 @@ function requireInteger(value, fieldName) {
 //
 // `path` is user input reaching a route that ultimately hands it to
 // `git.getFileContent`, which for a real ref runs `git show <ref>:<path>` and
-// for WORKING_TREE reads `join(repoPath, path)` straight off disk. Neither of
-// those is safe against a path that escapes the repo -- this is exactly the
-// shape of bug that previously let `base` reach `git diff` unvalidated, just
-// with a filesystem read as the payload instead of an argv option.
+// for WORKING_TREE reads the file straight off disk. Neither of those is
+// safe against a path that escapes the repo -- this is exactly the shape of
+// bug that previously let `base` reach `git diff` unvalidated, just with a
+// filesystem read as the payload instead of an argv option.
 //
-// The approach mirrors serveStatic's `withinPublicDir` check below: resolve
-// to an absolute path, then require it to be the repo root or a descendant
-// of it. `resolve()` collapses `..` and `.` segments, so this also catches
-// paths that only escape *after* normalisation (e.g. `foo/../../../etc`),
-// not just ones that are lexically outside to begin with. Absolute paths are
-// caught the same way -- `resolve(repoRoot, '/etc/passwd')` discards
-// `repoRoot` entirely per Node's documented behaviour for an absolute second
-// argument, so the result plainly fails the containment check.
+// This check is purely lexical: resolve to an absolute path (which mirrors
+// serveStatic's `withinPublicDir` check below), then require it to be the
+// repo root or a descendant of it. `resolve()` collapses `..` and `.`
+// segments, so this also catches paths that only escape *after*
+// normalisation (e.g. `foo/../../../etc`), not just ones that are lexically
+// outside to begin with. Absolute paths are caught the same way --
+// `resolve(repoRoot, '/etc/passwd')` discards `repoRoot` entirely per Node's
+// documented behaviour for an absolute second argument, so the result
+// plainly fails the containment check.
+//
+// Being lexical, this does NOT catch a path that is lexically contained but
+// resolves outside the repo via a symlink (e.g. a tracked symlink pointing
+// at `~/.ssh/id_rsa`, checked out as an ordinary part of reviewing a
+// branch). `readFile` follows symlinks at the OS level; `path.resolve` never
+// does. That gap only matters for WORKING_TREE, since `git show <ref>:<path>`
+// reads the git object database and returns a symlink's target *string*
+// rather than following it -- so it is closed at the other end, in
+// `readWorkingTreeFile` in git.js, which re-checks containment against the
+// `fs.realpath`-resolved location right before the disk read. See the
+// comment there for why that check lives in git.js and not here.
 // ---------------------------------------------------------------------------
 
 function resolveRepoRelativePath(repoPath, rawPath) {

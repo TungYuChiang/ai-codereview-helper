@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -436,6 +436,100 @@ describe('getFileContent', () => {
           return true;
         },
       );
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getFileContent — WORKING_TREE symlink containment (Critical) + size cap.
+//
+// server.js's resolveRepoRelativePath only checks the path *lexically*: it
+// never touches the filesystem, so a path that is lexically inside the repo
+// but is itself a symlink pointing elsewhere sails through it unnoticed.
+// readFile (used by the WORKING_TREE branch) follows symlinks at the OS
+// level, and git supports tracked symlinks -- checking out a branch that
+// contains `ln -s ~/.ssh/id_rsa leak.txt` makes `leak.txt` a real on-disk
+// symlink, and expanding context on it would hand the target's content back
+// to the browser. These tests exercise getFileContent directly (below
+// server.js's lexical check) so they isolate the realpath-based recheck in
+// readWorkingTreeFile from the layer above it.
+// ---------------------------------------------------------------------------
+
+describe('getFileContent — WORKING_TREE containment', () => {
+  test('a symlink inside the repo pointing outside it is rejected, not followed', async () => {
+    const repo = await makeTempRepo();
+    const secretPath = join(tmpdir(), `lcr-git-symlink-secret-${process.pid}-${Date.now()}.txt`);
+    try {
+      await writeFile(secretPath, 'TOP-SECRET-MARKER-DO-NOT-LEAK\n');
+      await symlink(secretPath, join(repo, 'leak.txt'));
+
+      await assert.rejects(
+        () => getFileContent(repo, 'WORKING_TREE', 'leak.txt'),
+        (err) => {
+          assert.ok(err instanceof Error);
+          assert.doesNotMatch(err.message, /TOP-SECRET-MARKER-DO-NOT-LEAK/);
+          return true;
+        },
+      );
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+      await rm(secretPath, { force: true });
+    }
+  });
+
+  test('a symlink inside the repo pointing at another file inside the repo still resolves', async () => {
+    const repo = await makeTempRepo();
+    try {
+      await writeFile(join(repo, 'real.txt'), 'real content\n');
+      await symlink(join(repo, 'real.txt'), join(repo, 'alias.txt'));
+
+      const content = await getFileContent(repo, 'WORKING_TREE', 'alias.txt');
+      assert.equal(content, 'real content\n');
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('a dangling symlink (target does not exist) returns null, not an error', async () => {
+    const repo = await makeTempRepo();
+    try {
+      await symlink(join(repo, 'does-not-exist-target.txt'), join(repo, 'dangling.txt'));
+      const content = await getFileContent(repo, 'WORKING_TREE', 'dangling.txt');
+      assert.equal(content, null);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('a working-tree file over the size cap is rejected instead of being buffered whole', async () => {
+    const repo = await makeTempRepo();
+    try {
+      const big = Buffer.alloc(10 * 1024 * 1024 + 1, 'a'); // one byte over the 10MB cap
+      await writeFile(join(repo, 'huge.log'), big);
+
+      await assert.rejects(
+        () => getFileContent(repo, 'WORKING_TREE', 'huge.log'),
+        (err) => {
+          assert.ok(err instanceof Error);
+          assert.match(err.message, /exceeds the .*byte/i);
+          return true;
+        },
+      );
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('a working-tree file exactly at the size cap is still read normally (boundary)', async () => {
+    const repo = await makeTempRepo();
+    try {
+      const atCap = Buffer.alloc(10 * 1024 * 1024, 'a');
+      await writeFile(join(repo, 'atcap.log'), atCap);
+
+      const content = await getFileContent(repo, 'WORKING_TREE', 'atcap.log');
+      assert.equal(content.length, atCap.length);
     } finally {
       await rm(repo, { recursive: true, force: true });
     }

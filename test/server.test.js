@@ -1,6 +1,6 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, access, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -992,6 +992,143 @@ describe('/api/lines', () => {
     test('a legitimate path in the same repo still works (control case)', async () => {
       const res = await fetch(
         `${baseUrl}/api/lines?repo=${repo.id}&ref=HEAD&path=foo.js&start=1&end=1`,
+      );
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.deepEqual(body.lines, [{ n: 1, text: 'safe content' }]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // path containment via WORKING_TREE (Critical) -- every vector above uses
+  // ref=HEAD, where `git show <ref>:<path>` refuses to resolve outside the
+  // repository on its own ("is outside repository"). That backstop is a git
+  // behaviour, not something this code checks, and it does not exist for
+  // WORKING_TREE: that branch reads straight off disk via readFile, which
+  // has no equivalent protection. Re-running the same vectors here (with
+  // ref=WORKING_TREE) is what actually exercises this server's own
+  // containment check for the one mode that has no other backstop -- plus a
+  // symlink test, since a lexically-contained path that is itself a symlink
+  // pointing outside the repo is a vector the lexical check cannot catch at
+  // all (WORKING_TREE-only: git show returns a symlink's target string, not
+  // its followed content).
+  // -------------------------------------------------------------------------
+
+  describe('path containment via WORKING_TREE (Critical)', () => {
+    let repoPath;
+    let repo;
+    let secretPath;
+
+    beforeEach(async () => {
+      repoPath = await trackedTempRepo('lines-wt-traversal');
+      await writeFile(join(repoPath, 'foo.js'), 'safe content\n');
+      await git(repoPath, ['add', 'foo.js']);
+      await git(repoPath, ['commit', '-q', '-m', 'add foo']);
+      repo = await registerRepo(baseUrl, repoPath);
+
+      secretPath = join(tmpdir(), `lcr-lines-wt-secret-${process.pid}-${Date.now()}.txt`);
+      await writeFile(secretPath, 'TOP-SECRET-MARKER-DO-NOT-LEAK\n');
+      cleanupDirs.push(secretPath);
+    });
+
+    afterEach(async () => {
+      await rm(secretPath, { force: true });
+    });
+
+    test('relative ../ escape is rejected with 400 and leaks no content', async () => {
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=WORKING_TREE&path=` +
+          encodeURIComponent('../../../../etc/passwd') +
+          '&start=1&end=1',
+      );
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.doesNotMatch(body.error ?? '', /root:/);
+      assert.doesNotMatch(JSON.stringify(body), /root:/);
+    });
+
+    test('absolute path is rejected with 400 and leaks no content', async () => {
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=WORKING_TREE&path=` +
+          encodeURIComponent('/etc/passwd') +
+          '&start=1&end=1',
+      );
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.doesNotMatch(JSON.stringify(body), /root:/);
+    });
+
+    test('a path that only escapes after normalisation is rejected with 400', async () => {
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=WORKING_TREE&path=` +
+          encodeURIComponent('foo.js/../../../../../../../../../../../../etc/passwd') +
+          '&start=1&end=1',
+      );
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.doesNotMatch(JSON.stringify(body), /root:/);
+    });
+
+    test('percent-encoded ../ (..%2f) is rejected with 400 and leaks no content', async () => {
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=WORKING_TREE&path=` +
+          '..%2f..%2f..%2f..%2fetc%2fpasswd' +
+          '&start=1&end=1',
+      );
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.doesNotMatch(JSON.stringify(body), /root:/);
+    });
+
+    test('escape to a real file just outside the repo root leaks no content (raw socket)', async () => {
+      const target =
+        `/api/lines?repo=${repo.id}&ref=WORKING_TREE&path=` +
+        encodeURIComponent(`../${secretPath.slice(tmpdir().length + 1)}`) +
+        '&start=1&end=1';
+      const res = await rawRequest(target);
+      assert.equal(res.status, 400);
+      assert.doesNotMatch(res.raw, /TOP-SECRET-MARKER-DO-NOT-LEAK/);
+    });
+
+    test('escaping the repo root itself (path=..) is rejected with 400', async () => {
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=WORKING_TREE&path=..&start=1&end=1`,
+      );
+      assert.equal(res.status, 400);
+    });
+
+    test('the repo root itself (path=.) is rejected with 400, not treated as a readable file', async () => {
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=WORKING_TREE&path=.&start=1&end=1`,
+      );
+      assert.equal(res.status, 400);
+    });
+
+    test('a symlink inside the repo pointing outside it is rejected with 400 and leaks no content', async () => {
+      await symlink(secretPath, join(repoPath, 'leak.txt'));
+
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=WORKING_TREE&path=leak.txt&start=1&end=1`,
+      );
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.doesNotMatch(JSON.stringify(body), /TOP-SECRET-MARKER-DO-NOT-LEAK/);
+    });
+
+    test('a symlink inside the repo pointing at another file inside the repo still works (control case)', async () => {
+      await symlink(join(repoPath, 'foo.js'), join(repoPath, 'alias.js'));
+
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=WORKING_TREE&path=alias.js&start=1&end=1`,
+      );
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.deepEqual(body.lines, [{ n: 1, text: 'safe content' }]);
+    });
+
+    test('a legitimate path in the same repo still works (control case)', async () => {
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=WORKING_TREE&path=foo.js&start=1&end=1`,
       );
       assert.equal(res.status, 200);
       const body = await res.json();
