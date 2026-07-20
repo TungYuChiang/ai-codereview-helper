@@ -294,6 +294,12 @@ function setViewMode(mode) {
   viewUnifiedBtnEl.setAttribute('aria-pressed', String(mode === 'unified'));
   viewSideBySideBtnEl.setAttribute('aria-pressed', String(mode === 'side-by-side'));
   saveSelection();
+  // Re-render each change point's content in place -- deliberately not a
+  // tree rebuild and not a refetch, so the main pane's scroll position
+  // (and the tree/scroll-spy state) is untouched. See EXTENSION POINT 1.
+  for (const entry of dom.changePoints.values()) {
+    renderChangePointContent(entry.changePoint, entry.contentEl);
+  }
 }
 
 viewUnifiedBtnEl.addEventListener('click', () => setViewMode('unified'));
@@ -511,6 +517,8 @@ function renderChangePoint(changePoint, group, file, groupKey, parentUl) {
   header.append(headerLabel, rightCheckbox);
   container.appendChild(header);
 
+  container.classList.toggle('checked', changePoint.checked);
+
   const content = createEl('div', { className: 'changepoint-content' });
   renderChangePointContent(changePoint, content);
   container.appendChild(content);
@@ -526,6 +534,7 @@ function renderChangePoint(changePoint, group, file, groupKey, parentUl) {
     leftCheckbox,
     rightContainer: container,
     rightCheckbox,
+    contentEl: content,
   });
   appState.order.push(key);
 }
@@ -533,21 +542,201 @@ function renderChangePoint(changePoint, group, file, groupKey, parentUl) {
 // ===========================================================================
 // EXTENSION POINT 1 -- render a single change point's content area.
 //
-// This unit only needs a placeholder here. The diff-rendering unit replaces
-// the body of this function with real unified/side-by-side rendering (it
-// can read appState.viewMode to decide which). Signature stays stable:
-// (changePoint, contentEl) -> void, contentEl already appended to the DOM.
-// Never use innerHTML -- diff text may contain anything.
+// Reads appState.viewMode to pick unified vs. side-by-side. Signature stays
+// stable: (changePoint, contentEl) -> void, contentEl already appended to
+// the DOM. Called both from renderChangePoint() (initial render) and from
+// setViewMode() (re-render in place on mode switch -- no refetch, no
+// scroll reset).
+//
+// Security: diff content comes from the reviewed repo and may contain
+// anything, including literal HTML. Every path below writes text via
+// textContent/createEl, with exactly one exception: buildCodeSpan() may
+// assign to innerHTML, but only ever with the *return value* of
+// Prism.highlight(text, grammar, lang) -- Prism's tokenizer HTML-escapes
+// the source text itself before wrapping matched tokens in spans, so the
+// result is always safe markup. Raw `line.text` is never assigned to
+// innerHTML anywhere.
 // ===========================================================================
+
+// Line objects come from git.js and are shared by reference with server
+// state (see model.js/state.js comments) -- read-only, never mutated here.
+
+const EXT_TO_PRISM_LANG = {
+  js: 'javascript',
+  jsx: 'javascript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  css: 'css',
+  html: 'markup',
+  htm: 'markup',
+  xml: 'markup',
+  svg: 'markup',
+};
+
+// Resolves a Prism language name for a file path, or null if the extension
+// is unknown or the vendored Prism bundle doesn't have that grammar loaded.
+// Callers must treat null as "render as plain text" -- never throw.
+function getPrismLanguage(filePath) {
+  const match = /\.([^./]+)$/.exec(filePath || '');
+  const ext = match ? match[1].toLowerCase() : '';
+  const lang = EXT_TO_PRISM_LANG[ext];
+  if (!lang) return null;
+  if (typeof Prism === 'undefined' || !Prism.languages || !Prism.languages[lang]) return null;
+  return lang;
+}
+
+// Builds the inline text/code carrier for one line's content. Highlighted
+// path uses Prism.highlight() (escapes internally, see block comment
+// above); everything else -- including any Prism failure -- falls back to
+// plain textContent so an unknown/broken grammar degrades instead of
+// crashing the render.
+function buildCodeSpan(text, lang) {
+  const span = createEl('span', { className: 'diff-code-text' });
+  if (lang) {
+    try {
+      span.innerHTML = Prism.highlight(text, Prism.languages[lang], lang);
+      return span;
+    } catch {
+      // fall through to plain text below
+    }
+  }
+  span.textContent = text;
+  return span;
+}
+
+function diffRowTypeClass(type) {
+  if (type === '+') return 'add';
+  if (type === '-') return 'del';
+  return 'ctx';
+}
 
 function renderChangePointContent(changePoint, contentEl) {
   contentEl.textContent = '';
-  const lineCount = changePoint.lines.length;
-  const placeholder = createEl('p', {
-    className: 'changepoint-placeholder',
-    text: `${lineCount} line${lineCount === 1 ? '' : 's'} changed`,
-  });
-  contentEl.appendChild(placeholder);
+  if (appState.viewMode === 'side-by-side') {
+    renderSideBySide(changePoint, contentEl);
+  } else {
+    renderUnified(changePoint, contentEl);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Unified: one row per line, old-line# | new-line# | marker | code.
+// ---------------------------------------------------------------------------
+
+function renderUnified(changePoint, contentEl) {
+  const lang = getPrismLanguage(changePoint.filePath);
+  const container = createEl('div', { className: 'diff-unified' });
+  for (const line of changePoint.lines) {
+    container.appendChild(buildUnifiedRow(line, lang));
+  }
+  contentEl.appendChild(container);
+}
+
+function buildUnifiedRow(line, lang) {
+  const row = createEl('div', { className: `diff-row diff-row-${diffRowTypeClass(line.type)}` });
+  row.appendChild(
+    createEl('span', {
+      className: 'diff-gutter',
+      text: line.oldLine != null ? String(line.oldLine) : '',
+    }),
+  );
+  row.appendChild(
+    createEl('span', {
+      className: 'diff-gutter',
+      text: line.newLine != null ? String(line.newLine) : '',
+    }),
+  );
+  row.appendChild(createEl('span', { className: 'diff-marker', text: line.type }));
+  const code = createEl('span', { className: 'diff-code' });
+  code.appendChild(buildCodeSpan(line.text, lang));
+  row.appendChild(code);
+  return row;
+}
+
+// ---------------------------------------------------------------------------
+// Side-by-side: old lines on the left, new lines on the right, aligned row
+// by row. Context lines appear on both sides. A run of N '-' lines directly
+// followed by a run of M '+' lines pairs the first min(N,M) rows; the
+// leftover rows are single-sided (empty cell on the other side).
+// ---------------------------------------------------------------------------
+
+function pairLinesForSideBySide(lines) {
+  const rows = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (line.type === ' ') {
+      rows.push({ left: line, right: line });
+      i++;
+      continue;
+    }
+
+    if (line.type === '-') {
+      const dels = [];
+      while (i < lines.length && lines[i].type === '-') {
+        dels.push(lines[i]);
+        i++;
+      }
+      const adds = [];
+      while (i < lines.length && lines[i].type === '+') {
+        adds.push(lines[i]);
+        i++;
+      }
+      const pairCount = Math.min(dels.length, adds.length);
+      for (let k = 0; k < pairCount; k++) rows.push({ left: dels[k], right: adds[k] });
+      for (let k = pairCount; k < dels.length; k++) rows.push({ left: dels[k], right: null });
+      for (let k = pairCount; k < adds.length; k++) rows.push({ left: null, right: adds[k] });
+      continue;
+    }
+
+    // '+' run with no immediately preceding '-' run (e.g. a pure addition).
+    const adds = [];
+    while (i < lines.length && lines[i].type === '+') {
+      adds.push(lines[i]);
+      i++;
+    }
+    for (const add of adds) rows.push({ left: null, right: add });
+  }
+  return rows;
+}
+
+function renderSideBySide(changePoint, contentEl) {
+  const lang = getPrismLanguage(changePoint.filePath);
+  const rows = pairLinesForSideBySide(changePoint.lines);
+
+  const container = createEl('div', { className: 'diff-sidebyside' });
+  const leftCol = createEl('div', { className: 'diff-side diff-side-left' });
+  const rightCol = createEl('div', { className: 'diff-side diff-side-right' });
+
+  for (const { left, right } of rows) {
+    leftCol.appendChild(buildSideBySideRow(left, lang, 'old'));
+    rightCol.appendChild(buildSideBySideRow(right, lang, 'new'));
+  }
+
+  container.append(leftCol, rightCol);
+  contentEl.appendChild(container);
+}
+
+function buildSideBySideRow(line, lang, side) {
+  if (!line) {
+    const row = createEl('div', { className: 'diff-row diff-row-empty' });
+    row.appendChild(createEl('span', { className: 'diff-gutter' }));
+    row.appendChild(createEl('span', { className: 'diff-marker' }));
+    row.appendChild(createEl('span', { className: 'diff-code' }));
+    return row;
+  }
+
+  const row = createEl('div', { className: `diff-row diff-row-${diffRowTypeClass(line.type)}` });
+  const lineNo = side === 'old' ? line.oldLine : line.newLine;
+  row.appendChild(
+    createEl('span', { className: 'diff-gutter', text: lineNo != null ? String(lineNo) : '' }),
+  );
+  row.appendChild(createEl('span', { className: 'diff-marker', text: line.type }));
+  const code = createEl('span', { className: 'diff-code' });
+  code.appendChild(buildCodeSpan(line.text, lang));
+  row.appendChild(code);
+  return row;
 }
 
 // ===========================================================================
@@ -590,6 +779,7 @@ function applyCheckedChange(key, checked) {
 
   entry.leftCheckbox.checked = checked;
   entry.rightCheckbox.checked = checked;
+  entry.rightContainer.classList.toggle('checked', checked);
   updateGroupDom(groupKey);
   updateFileDom(file.path);
   updateStatsDom();
@@ -683,6 +873,22 @@ function handleIntersections(entries) {
 }
 
 // ===========================================================================
+// Empty state -- first run, no repos configured yet. Points at the
+// add-repo form that already lives in the top bar (see EXTENSION POINT
+// above `addRepoToggleEl`) instead of duplicating that UI here.
+// ===========================================================================
+
+function showEmptyState() {
+  changepointsRootEl.textContent = '';
+  changepointsRootEl.appendChild(
+    createEl('p', {
+      className: 'empty-state',
+      text: 'No repos configured yet. Click "+" next to the repo selector above to add one.',
+    }),
+  );
+}
+
+// ===========================================================================
 // Init
 // ===========================================================================
 
@@ -692,6 +898,7 @@ async function init() {
   await loadRepos();
 
   if (appState.repos.length === 0) {
+    showEmptyState();
     return;
   }
   if (!appState.repo || !appState.repos.some((r) => r.id === appState.repo)) {

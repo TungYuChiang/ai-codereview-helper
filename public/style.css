@@ -239,6 +239,12 @@ body {
   box-shadow: 0 0 0 1px #0969da;
 }
 
+/* Checked change points dim as a whole block; current (see above) and
+ * checked are independent classes and can both apply at once. */
+.changepoint.checked {
+  opacity: 0.55;
+}
+
 .changepoint-header {
   display: flex;
   align-items: center;
@@ -251,11 +257,103 @@ body {
 }
 
 .changepoint-content {
-  padding: 8px 10px;
-  color: #57606a;
+  padding: 0;
+  overflow-x: auto;
 }
 
-.changepoint-placeholder {
-  margin: 0;
+.empty-state {
+  margin: 24px;
+  color: #57606a;
   font-style: italic;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Diff rendering: unified + side-by-side                                  */
+/*                                                                          */
+/* Background lives on .diff-row (per line-type) -- the container layer.   */
+/* Prism's token colors live on .diff-code-text's children -- the text     */
+/* layer -- so the two compose instead of fighting. We deliberately don't  */
+/* tag any element with a "language-*" class: Prism's own theme CSS keys   */
+/* an opaque background off `[class*="language-"]`, which would sit on    */
+/* top of and hide the diff-row background. Prism.highlight() doesn't      */
+/* need that class to work -- it's only used by Prism's own autoloader.    */
+/* ---------------------------------------------------------------------- */
+
+.diff-unified,
+.diff-sidebyside {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.diff-row {
+  display: flex;
+}
+
+.diff-row-add {
+  background: #e6ffec;
+}
+
+.diff-row-del {
+  background: #ffebe9;
+}
+
+.diff-row-ctx {
+  background: transparent;
+}
+
+.diff-row-empty {
+  background: #f6f8fa;
+}
+
+.diff-gutter {
+  flex: 0 0 44px;
+  text-align: right;
+  padding: 0 6px;
+  color: #8c959f;
+  user-select: none;
+  border-right: 1px solid rgba(27, 31, 36, 0.06);
+}
+
+.diff-marker {
+  flex: 0 0 18px;
+  text-align: center;
+  color: #57606a;
+  user-select: none;
+}
+
+.diff-row-add .diff-marker {
+  color: #1a7f37;
+}
+
+.diff-row-del .diff-marker {
+  color: #cf222e;
+}
+
+.diff-code {
+  flex: 1 1 auto;
+  padding-right: 8px;
+  white-space: pre;
+}
+
+.diff-sidebyside {
+  display: flex;
+  align-items: flex-start;
+}
+
+.diff-side {
+  flex: 1 1 50%;
+}
+
+.diff-side-left {
+  border-right: 1px solid #d0d7de;
+}
+
+/* Neutralize the default Prism theme's translucent token backgrounds so
+ * they don't wash out the diff-row background underneath (see block
+ * comment above). Token *colors* are left as-is. */
+.diff-code .token.operator,
+.diff-code .token.entity,
+.diff-code .token.url {
+  background: none;
 }
