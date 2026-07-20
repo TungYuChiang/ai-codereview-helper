@@ -9,7 +9,7 @@
 import http from 'node:http';
 import { readFile, stat, mkdir, appendFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve, sep, extname } from 'node:path';
+import { dirname, join, relative, resolve, sep, extname } from 'node:path';
 
 import * as config from './config.js';
 import * as git from './git.js';
@@ -35,6 +35,12 @@ const MAX_BODY_BYTES = 1024 * 1024; // 1MB
 // Longest ref we will accept. Git itself has no hard limit, but a ref this
 // long is not something a human typed.
 const MAX_REF_LENGTH = 255;
+
+// Largest line range /api/lines will return in one call. Context expansion
+// is meant to be progressive (click above/below, pull in a chunk, repeat) --
+// there is no legitimate reason for one request to pull an entire large
+// file at once.
+const MAX_LINES_PER_REQUEST = 2000;
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -357,6 +363,66 @@ function requireString(value, fieldName) {
   return value;
 }
 
+// Any base-10 integer, sign included. Deliberately permissive about *range*
+// (negative, zero, absurdly large) -- /api/lines clamps those to the file's
+// actual bounds rather than rejecting them, since the front end legitimately
+// asks for e.g. `end=999999` to mean "to the end of the file". This only
+// rejects things that are not an integer at all.
+function requireInteger(value, fieldName) {
+  const str = requireString(value, fieldName);
+  if (!/^-?\d+$/.test(str) || !Number.isSafeInteger(Number(str))) {
+    throw new HttpError(400, `${fieldName} must be an integer`);
+  }
+  return Number(str);
+}
+
+// ---------------------------------------------------------------------------
+// Path containment for /api/lines.
+//
+// `path` is user input reaching a route that ultimately hands it to
+// `git.getFileContent`, which for a real ref runs `git show <ref>:<path>` and
+// for WORKING_TREE reads `join(repoPath, path)` straight off disk. Neither of
+// those is safe against a path that escapes the repo -- this is exactly the
+// shape of bug that previously let `base` reach `git diff` unvalidated, just
+// with a filesystem read as the payload instead of an argv option.
+//
+// The approach mirrors serveStatic's `withinPublicDir` check below: resolve
+// to an absolute path, then require it to be the repo root or a descendant
+// of it. `resolve()` collapses `..` and `.` segments, so this also catches
+// paths that only escape *after* normalisation (e.g. `foo/../../../etc`),
+// not just ones that are lexically outside to begin with. Absolute paths are
+// caught the same way -- `resolve(repoRoot, '/etc/passwd')` discards
+// `repoRoot` entirely per Node's documented behaviour for an absolute second
+// argument, so the result plainly fails the containment check.
+// ---------------------------------------------------------------------------
+
+function resolveRepoRelativePath(repoPath, rawPath) {
+  const repoRoot = resolve(repoPath);
+  const absolute = resolve(repoRoot, rawPath);
+
+  const withinRepo = absolute === repoRoot || absolute.startsWith(repoRoot + sep);
+  if (!withinRepo) {
+    throw new HttpError(400, 'path must resolve to a location inside the repository');
+  }
+
+  const relativePath = relative(repoRoot, absolute);
+  if (relativePath === '') {
+    throw new HttpError(400, 'path must refer to a file, not the repository root');
+  }
+
+  return relativePath;
+}
+
+// Splits file content into lines the way a human counts them: a trailing
+// newline does not count as one more (empty) line. `''` (empty file) has 0
+// lines, not 1.
+function splitFileLines(content) {
+  if (content === '') return [];
+  const lines = content.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
 // ---------------------------------------------------------------------------
 // API routing
 // ---------------------------------------------------------------------------
@@ -437,6 +503,53 @@ async function routeApi(req, res, url, pathname) {
       base,
       target,
     });
+  }
+
+  if (pathname === '/api/lines' && method === 'GET') {
+    const repo = await getRepoOr404(url.searchParams.get('repo'));
+    const ref = requireRef(url.searchParams.get('ref'), 'ref');
+    const rawPath = requireString(url.searchParams.get('path'), 'path');
+    const relPath = resolveRepoRelativePath(repo.path, rawPath);
+    const rawStart = requireInteger(url.searchParams.get('start'), 'start');
+    const rawEnd = requireInteger(url.searchParams.get('end'), 'end');
+    if (rawEnd < rawStart) {
+      throw new HttpError(400, 'end must be greater than or equal to start');
+    }
+
+    let content;
+    try {
+      content = await git.getFileContent(repo.path, ref, relPath);
+    } catch (err) {
+      throw new HttpError(400, err.message);
+    }
+    if (content === null) {
+      throw new HttpError(404, `file not found: ${relPath} at ${ref}`);
+    }
+
+    const allLines = splitFileLines(content);
+    const totalLines = allLines.length;
+
+    let start = 0;
+    let end = 0;
+    let lines = [];
+    if (totalLines > 0) {
+      start = Math.min(Math.max(rawStart, 1), totalLines);
+      end = Math.min(Math.max(rawEnd, start), totalLines);
+
+      const requestedCount = end - start + 1;
+      if (requestedCount > MAX_LINES_PER_REQUEST) {
+        throw new HttpError(
+          400,
+          `requested range spans ${requestedCount} lines, which exceeds the ${MAX_LINES_PER_REQUEST}-line limit per request`,
+        );
+      }
+
+      lines = allLines
+        .slice(start - 1, end)
+        .map((text, i) => ({ n: start + i, text }));
+    }
+
+    return sendJson(res, 200, { path: relPath, ref, start, end, totalLines, lines });
   }
 
   if (pathname === '/api/check' && method === 'POST') {

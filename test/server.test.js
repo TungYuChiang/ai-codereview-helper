@@ -1,6 +1,6 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -642,6 +642,361 @@ describe('/api/export', () => {
       `${baseUrl}/api/export?repo=${repo.id}&base=HEAD&target=WORKING_TREE&format=xml`,
     );
     assert.equal(res.status, 400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /api/lines — expand unmodified context around a diff for GitHub-style
+// "expand above/below". Reuses requireRef for `ref` and adds its own
+// containment check for `path`, since that parameter has no equivalent
+// existing defence.
+// ---------------------------------------------------------------------------
+
+describe('/api/lines', () => {
+  test('returns the requested 1-based inclusive line range', async () => {
+    const repoPath = await trackedTempRepo('lines-basic');
+    const content = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+    await writeFile(join(repoPath, 'foo.js'), content);
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add foo']);
+    const head = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const res = await fetch(
+      `${baseUrl}/api/lines?repo=${repo.id}&ref=${head}&path=foo.js&start=5&end=8`,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.path, 'foo.js');
+    assert.equal(body.ref, head);
+    assert.equal(body.start, 5);
+    assert.equal(body.end, 8);
+    assert.equal(body.totalLines, 20);
+    assert.deepEqual(body.lines, [
+      { n: 5, text: 'line 5' },
+      { n: 6, text: 'line 6' },
+      { n: 7, text: 'line 7' },
+      { n: 8, text: 'line 8' },
+    ]);
+  });
+
+  test('clamps an out-of-range start/end to the file bounds instead of erroring', async () => {
+    const repoPath = await trackedTempRepo('lines-clamp');
+    const content = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+    await writeFile(join(repoPath, 'foo.js'), content);
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add foo']);
+    const head = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const res = await fetch(
+      `${baseUrl}/api/lines?repo=${repo.id}&ref=${head}&path=foo.js&start=-50&end=999999`,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.start, 1);
+    assert.equal(body.end, 10);
+    assert.equal(body.totalLines, 10);
+    assert.equal(body.lines.length, 10);
+    assert.equal(body.lines[0].n, 1);
+    assert.equal(body.lines[9].n, 10);
+  });
+
+  test('WORKING_TREE reads the current on-disk content, not HEAD', async () => {
+    const repoPath = await trackedTempRepo('lines-working-tree');
+    await writeFile(join(repoPath, 'foo.js'), 'committed\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add foo']);
+    await writeFile(join(repoPath, 'foo.js'), 'uncommitted change\n');
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const res = await fetch(
+      `${baseUrl}/api/lines?repo=${repo.id}&ref=WORKING_TREE&path=foo.js&start=1&end=1`,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.lines, [{ n: 1, text: 'uncommitted change' }]);
+  });
+
+  test('a file that does not exist at the given ref returns 404 with a readable message', async () => {
+    const repoPath = await trackedTempRepo('lines-missing-file');
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const res = await fetch(
+      `${baseUrl}/api/lines?repo=${repo.id}&ref=HEAD&path=nope.js&start=1&end=10`,
+    );
+    assert.equal(res.status, 404);
+    const body = await res.json();
+    assert.match(body.error, /nope\.js/);
+  });
+
+  test('a range over 2000 lines (after clamping) is rejected with 400', async () => {
+    const repoPath = await trackedTempRepo('lines-too-many');
+    const content = Array.from({ length: 3000 }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+    await writeFile(join(repoPath, 'big.js'), content);
+    await git(repoPath, ['add', 'big.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add big']);
+    const head = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const res = await fetch(
+      `${baseUrl}/api/lines?repo=${repo.id}&ref=${head}&path=big.js&start=1&end=2001`,
+    );
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.match(body.error, /2000/);
+  });
+
+  test('exactly 2000 lines is accepted (boundary)', async () => {
+    const repoPath = await trackedTempRepo('lines-boundary');
+    const content = Array.from({ length: 3000 }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+    await writeFile(join(repoPath, 'big.js'), content);
+    await git(repoPath, ['add', 'big.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add big']);
+    const head = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const res = await fetch(
+      `${baseUrl}/api/lines?repo=${repo.id}&ref=${head}&path=big.js&start=1&end=2000`,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.lines.length, 2000);
+  });
+
+  test('a range that clamps down to 2000 or fewer lines is accepted even though the raw end is huge', async () => {
+    // The front end expands toward the end of the file by sending an
+    // intentionally huge `end` and relying on clamping -- that must not be
+    // confused with actually asking for a huge range.
+    const repoPath = await trackedTempRepo('lines-clamped-under-cap');
+    const content = Array.from({ length: 50 }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+    await writeFile(join(repoPath, 'small.js'), content);
+    await git(repoPath, ['add', 'small.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add small']);
+    const head = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const res = await fetch(
+      `${baseUrl}/api/lines?repo=${repo.id}&ref=${head}&path=small.js&start=1&end=999999`,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.totalLines, 50);
+    assert.equal(body.lines.length, 50);
+  });
+
+  test('nested path within the repo resolves correctly', async () => {
+    const repoPath = await trackedTempRepo('lines-nested');
+    await mkdir(join(repoPath, 'src', 'lib'), { recursive: true });
+    await writeFile(join(repoPath, 'src', 'lib', 'util.js'), 'export const x = 1;\n');
+    await git(repoPath, ['add', '.']);
+    await git(repoPath, ['commit', '-q', '-m', 'add nested file']);
+    const head = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const res = await fetch(
+      `${baseUrl}/api/lines?repo=${repo.id}&ref=${head}&path=src/lib/util.js&start=1&end=1`,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.lines, [{ n: 1, text: 'export const x = 1;' }]);
+  });
+
+  test('missing path returns 400', async () => {
+    const repoPath = await trackedTempRepo('lines-missing-path');
+    const repo = await registerRepo(baseUrl, repoPath);
+    const res = await fetch(`${baseUrl}/api/lines?repo=${repo.id}&ref=HEAD&start=1&end=1`);
+    assert.equal(res.status, 400);
+  });
+
+  test('missing start/end returns 400', async () => {
+    const repoPath = await trackedTempRepo('lines-missing-range');
+    const repo = await registerRepo(baseUrl, repoPath);
+    const res = await fetch(`${baseUrl}/api/lines?repo=${repo.id}&ref=HEAD&path=foo.js`);
+    assert.equal(res.status, 400);
+  });
+
+  test('non-integer start/end returns 400', async () => {
+    const repoPath = await trackedTempRepo('lines-nan-range');
+    const repo = await registerRepo(baseUrl, repoPath);
+    const res = await fetch(
+      `${baseUrl}/api/lines?repo=${repo.id}&ref=HEAD&path=foo.js&start=abc&end=10`,
+    );
+    assert.equal(res.status, 400);
+  });
+
+  test('reversed range (end before start) returns 400', async () => {
+    const repoPath = await trackedTempRepo('lines-reversed-range');
+    const repo = await registerRepo(baseUrl, repoPath);
+    const res = await fetch(
+      `${baseUrl}/api/lines?repo=${repo.id}&ref=HEAD&path=foo.js&start=10&end=5`,
+    );
+    assert.equal(res.status, 400);
+  });
+
+  test('unknown repo id returns 404', async () => {
+    const res = await fetch(`${baseUrl}/api/lines?repo=no-such-id&ref=HEAD&path=foo.js&start=1&end=1`);
+    assert.equal(res.status, 404);
+  });
+
+  test('ref starting with a dash is rejected via the shared requireRef validation', async () => {
+    const repoPath = await trackedTempRepo('lines-ref-dash');
+    const repo = await registerRepo(baseUrl, repoPath);
+    const res = await fetch(
+      `${baseUrl}/api/lines?repo=${repo.id}&ref=${encodeURIComponent('--output=/tmp/x')}&path=foo.js&start=1&end=1`,
+    );
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.match(body.error, /ref must not start with '-'/);
+  });
+
+  test('ref containing a colon or whitespace is rejected via the shared requireRef validation', async () => {
+    const repoPath = await trackedTempRepo('lines-ref-colon');
+    const repo = await registerRepo(baseUrl, repoPath);
+    for (const bad of ['HEAD:../../etc/passwd', 'HEAD foo']) {
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=${encodeURIComponent(bad)}&path=foo.js&start=1&end=1`,
+      );
+      assert.equal(res.status, 400, `expected 400 for ref=${JSON.stringify(bad)}`);
+      const body = await res.json();
+      assert.match(body.error, /must not contain whitespace, control characters, or ':'/);
+    }
+  });
+
+  test('a foreign Origin is rejected the same as every other /api/ route', async () => {
+    const repoPath = await trackedTempRepo('lines-cross-origin');
+    const repo = await registerRepo(baseUrl, repoPath);
+    const res = await fetch(
+      `${baseUrl}/api/lines?repo=${repo.id}&ref=HEAD&path=foo.js&start=1&end=1`,
+      { headers: { Origin: 'http://evil.example' } },
+    );
+    assert.equal(res.status, 403);
+  });
+
+  // -------------------------------------------------------------------------
+  // path containment (Critical) — this project has already shipped one
+  // argument-injection bug of this exact shape via a query-string parameter
+  // reaching git with no validation. `path` gets the same suspicion: every
+  // vector below must be rejected with an exact status and must not leak
+  // any file content, not merely "not 200".
+  //
+  // Unlike the static-file traversal tests above, `path` here travels as a
+  // *query string value*, not a URL path segment -- the WHATWG URL spec's
+  // dot-segment normalisation only applies to the path component, so
+  // `fetch` does NOT rewrite `..` inside a query value before it leaves the
+  // client. A plain `fetch` genuinely exercises the server's own
+  // containment check. The raw-socket variant is kept too, as an
+  // independent confirmation that nothing between here and the socket
+  // (undici, the URL parser) is quietly doing that normalisation for us.
+  // -------------------------------------------------------------------------
+
+  describe('path containment (Critical)', () => {
+    let repoPath;
+    let repo;
+    let secretPath;
+
+    beforeEach(async () => {
+      repoPath = await trackedTempRepo('lines-traversal');
+      await writeFile(join(repoPath, 'foo.js'), 'safe content\n');
+      await git(repoPath, ['add', 'foo.js']);
+      await git(repoPath, ['commit', '-q', '-m', 'add foo']);
+      repo = await registerRepo(baseUrl, repoPath);
+
+      // A file just outside the repo root, with a unique marker string, so a
+      // successful escape is unambiguous (not just "some file leaked" but
+      // "this exact secret leaked").
+      secretPath = join(tmpdir(), `lcr-lines-secret-${process.pid}-${Date.now()}.txt`);
+      await writeFile(secretPath, 'TOP-SECRET-MARKER-DO-NOT-LEAK\n');
+      cleanupDirs.push(secretPath);
+    });
+
+    afterEach(async () => {
+      await rm(secretPath, { force: true });
+    });
+
+    test('relative ../ escape is rejected with 400 and leaks no content', async () => {
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=HEAD&path=` +
+          encodeURIComponent('../../../../etc/passwd') +
+          '&start=1&end=1',
+      );
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.doesNotMatch(body.error ?? '', /root:/);
+      assert.doesNotMatch(JSON.stringify(body), /root:/);
+    });
+
+    test('absolute path is rejected with 400 and leaks no content', async () => {
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=HEAD&path=` +
+          encodeURIComponent('/etc/passwd') +
+          '&start=1&end=1',
+      );
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.doesNotMatch(JSON.stringify(body), /root:/);
+    });
+
+    test('a path that only escapes after normalisation is rejected with 400', async () => {
+      // Lexically starts inside the repo ("foo.js/...") but normalises to
+      // something well outside it. Enough `../` segments to clear any
+      // plausible tmpdir nesting depth on any OS.
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=HEAD&path=` +
+          encodeURIComponent('foo.js/../../../../../../../../../../../../etc/passwd') +
+          '&start=1&end=1',
+      );
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.doesNotMatch(JSON.stringify(body), /root:/);
+    });
+
+    test('percent-encoded ../ (..%2f) is rejected with 400 and leaks no content', async () => {
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=HEAD&path=` +
+          '..%2f..%2f..%2f..%2fetc%2fpasswd' +
+          '&start=1&end=1',
+      );
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.doesNotMatch(JSON.stringify(body), /root:/);
+    });
+
+    test('escape to a real file just outside the repo root leaks no content (raw socket)', async () => {
+      // Drives the request over a raw TCP socket so there is no question of
+      // any client-side library normalising the query string -- the server
+      // sees exactly this byte sequence on the wire.
+      const target =
+        `/api/lines?repo=${repo.id}&ref=HEAD&path=` +
+        encodeURIComponent(`../${secretPath.slice(tmpdir().length + 1)}`) +
+        '&start=1&end=1';
+      const res = await rawRequest(target);
+      assert.equal(res.status, 400);
+      assert.doesNotMatch(res.raw, /TOP-SECRET-MARKER-DO-NOT-LEAK/);
+    });
+
+    test('escaping the repo root itself (path=..) is rejected with 400', async () => {
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=HEAD&path=..&start=1&end=1`,
+      );
+      assert.equal(res.status, 400);
+    });
+
+    test('the repo root itself (path=.) is rejected with 400, not treated as a readable file', async () => {
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=HEAD&path=.&start=1&end=1`,
+      );
+      assert.equal(res.status, 400);
+    });
+
+    test('a legitimate path in the same repo still works (control case)', async () => {
+      const res = await fetch(
+        `${baseUrl}/api/lines?repo=${repo.id}&ref=HEAD&path=foo.js&start=1&end=1`,
+      );
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.deepEqual(body.lines, [{ n: 1, text: 'safe content' }]);
+    });
   });
 });
 
