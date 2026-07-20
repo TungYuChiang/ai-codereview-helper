@@ -70,11 +70,11 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 - **Tier**: 1
 - **Touches**: `config.js`, `test/config.test.js`
 - **Acceptance**:
-  - [ ] 設定檔不存在時自動建立 `~/.local-code-review/` 與空的 `config.json`
-  - [ ] 能新增 / 移除 / 列出 repo
-  - [ ] 每個 repo 有穩定的 repo-id（同路徑永遠得到同 id）
-  - [ ] 損毀的 config.json 不會讓程式崩潰
-- **Status**: Pending
+  - [x] 設定檔不存在時自動建立 `~/.local-code-review/` 與空的 `config.json`
+  - [x] 能新增 / 移除 / 列出 repo
+  - [x] 每個 repo 有穩定的 repo-id（同路徑永遠得到同 id）
+  - [x] 損毀的 config.json 不會讓程式崩潰
+- **Status**: Completed (`0acd281`..`1a63cb8`)
 
 ### change-point-model
 - **Spec 章節**: 架構 / Pipeline — `model.js` ★核心邏輯，測試重點
@@ -227,8 +227,8 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 
 | Status | Count |
 |--------|-------|
-| Pending | 9 |
+| Pending | 8 |
 | In Progress | 0 |
-| Completed | 2 |
+| Completed | 3 |
 | Failed | 0 |
 | Total | 11 |
