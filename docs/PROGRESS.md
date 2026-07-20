@@ -41,8 +41,8 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
   - [x] 每個 hunk 有正確的新舊起始行號與逐行 `+`/`-`/context 標記
   - [x] ref↔ref 用 three-dot 語意組指令；target 為 Working Tree 時省略 target
   - [x] 能列出 repo 的 branch / tag 清單
-  - [ ] 二進位檔、新增檔、刪除檔、改名不會讓解析崩潰
-- **Status**: Pending
+  - [x] 二進位檔、新增檔、刪除檔、改名不會讓解析崩潰
+- **Status**: Completed (`7a90119`..`b5cee35`)
 
 ### function-ranges
 - **Spec 章節**: 非 JS 語言 / 打勾粒度 — `functions.js`
