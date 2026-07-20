@@ -120,11 +120,11 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 - **Tier**: 2
 - **Touches**: `export.js`, `test/export.test.js`
 - **Acceptance**:
-  - [ ] Claude prompt 只包含有 comment 的變更點
-  - [ ] 每則帶檔案絕對路徑 + 所在 function 完整原始碼 + diff + comment
-  - [ ] Markdown 依 spec 範例的層級結構輸出，含進度統計行
-  - [ ] 無 comment 時兩種格式皆能產出合理輸出而不崩潰
-- **Status**: Pending
+  - [x] Claude prompt 只包含有 comment 的變更點
+  - [x] 每則帶檔案絕對路徑 + 所在 function 完整原始碼 + diff + comment
+  - [x] Markdown 依 spec 範例的層級結構輸出，含進度統計行
+  - [x] 無 comment 時兩種格式皆能產出合理輸出而不崩潰
+- **Status**: Completed (`b0514ac`..`ba589fa`)
 
 ### server-api
 - **Spec 章節**: 架構 / API 概要 — `server.js` + `review.js`
@@ -227,8 +227,8 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 
 | Status | Count |
 |--------|-------|
-| Pending | 6 |
+| Pending | 5 |
 | In Progress | 0 |
-| Completed | 5 |
+| Completed | 6 |
 | Failed | 0 |
 | Total | 11 |
