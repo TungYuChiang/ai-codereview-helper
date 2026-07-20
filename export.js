@@ -48,7 +48,7 @@ export function toClaudePrompt(ctx) {
 
   const sections = [intro];
 
-  if (entries.length === 0) {
+  if (entries.length === 0 && !hasOrphans) {
     sections.push(NO_QUESTIONS_NOTE);
   } else {
     entries.forEach((entry, index) => {
@@ -73,11 +73,11 @@ function formatClaudeEntry({ file, group, changePoint }, index, repoPath, source
     if (source !== undefined) {
       const sourceLines = source.split('\n');
       const snippet = sourceLines.slice(group.startLine - 1, group.endLine).join('\n');
-      parts.push(`Function 原始碼：\n\`\`\`\n${snippet}\n\`\`\``);
+      parts.push(`Function 原始碼：\n${fence(snippet)}`);
     }
   }
 
-  parts.push(`Diff：\n\`\`\`diff\n${formatRawLines(changePoint.lines)}\n\`\`\``);
+  parts.push(`Diff：\n${fence(formatRawLines(changePoint.lines), 'diff')}`);
   parts.push(`我的 comment：\n${changePoint.comment}`);
 
   return parts.join('\n\n');
@@ -87,12 +87,29 @@ function formatRawLines(lines) {
   return (lines ?? []).map((line) => `${line.type}${line.text}`).join('\n');
 }
 
+// Wrap `content` in a fenced code block whose backtick run is guaranteed to
+// be longer than any backtick run already inside `content`. This is the
+// standard CommonMark rule (a fence of N backticks is only closed by a run
+// of N or more) applied defensively: since `content` here is arbitrary
+// reviewed source/diff text, a plain ``` fence can be closed early by an
+// embedded ``` sequence (e.g. a Markdown file, or a JS template literal
+// containing a fenced snippet), corrupting everything that follows in the
+// entry. Sizing the fence to the content avoids that without having to
+// change the overall block format (still gets ```diff syntax highlighting).
+function fence(content, lang = '') {
+  const runs = content.match(/`+/g) ?? [];
+  const longestRun = runs.reduce((max, run) => Math.max(max, run.length), 0);
+  const fenceLength = Math.max(3, longestRun + 1);
+  const marker = '`'.repeat(fenceLength);
+  return `${marker}${lang}\n${content}\n${marker}`;
+}
+
 function formatClaudeOrphanSection(orphans) {
   const parts = ['## 孤兒 comment（這些變更點已不在目前的 diff 中）'];
   orphans.forEach((orphan, index) => {
     const heading = `### ${index + 1}. ${orphan.filePath ?? '(未知檔案)'}`;
     const fnLine = orphan.functionName ? `所在 function：${orphan.functionName}` : null;
-    const diffBlock = `Diff 快照：\n\`\`\`diff\n${orphan.diffText ?? ''}\n\`\`\``;
+    const diffBlock = `Diff 快照：\n${fence(orphan.diffText ?? '', 'diff')}`;
     const commentLine = `我的 comment：\n${orphan.text}`;
     parts.push([heading, fnLine, diffBlock, commentLine].filter(Boolean).join('\n\n'));
   });
@@ -115,13 +132,15 @@ export function toMarkdown(ctx) {
     .map((file) => formatMarkdownFile(file))
     .filter((section) => section !== null);
 
-  if (fileSections.length === 0) {
+  const hasOrphans = Array.isArray(orphans) && orphans.length > 0;
+
+  if (fileSections.length === 0 && !hasOrphans) {
     blocks.push('這次 review 沒有留下 comment。');
   } else {
     blocks.push(...fileSections);
   }
 
-  if (Array.isArray(orphans) && orphans.length > 0) {
+  if (hasOrphans) {
     blocks.push(formatMarkdownOrphanSection(orphans));
   }
 

@@ -60,6 +60,11 @@ function annotatedFile(overrides = {}) {
   };
 }
 
+function longestBacktickRun(text) {
+  const runs = text.match(/`+/g) ?? [];
+  return runs.reduce((max, run) => Math.max(max, run.length), 0);
+}
+
 function baseCtx(overrides = {}) {
   return {
     repoName: 'ragic',
@@ -305,6 +310,124 @@ describe('toClaudePrompt', () => {
     assert.ok(prompt.includes('不在') || prompt.includes('no longer') || prompt.includes('not in'), 'expected a note that the change point is no longer in the current diff');
   });
 
+  test('does not claim there are no comments when an orphan carries a real comment (finding 1)', () => {
+    const ctx = baseCtx({
+      files: [
+        annotatedFile({
+          groups: [annotatedGroup({ changePoints: [annotatedChangePoint({ comment: null })] })],
+        }),
+      ],
+      orphans: [
+        {
+          key: 'orphankey1234567',
+          text: 'this is a real orphaned comment',
+          updatedAt: '2026-07-19T10:00:00.000Z',
+          filePath: 'src/gone.js',
+          functionName: 'deletedFn',
+          diffText: '+this code no longer exists',
+        },
+      ],
+    });
+
+    const prompt = toClaudePrompt(ctx);
+    assert.ok(
+      !prompt.includes('這次 review 沒有留下任何疑問'),
+      'must not claim there are no questions when an orphan comment exists',
+    );
+    assert.ok(prompt.includes('this is a real orphaned comment'));
+  });
+
+  test('wraps function source in a fence long enough to survive embedded triple-backtick content (finding 2)', () => {
+    const sourceWithFence = [
+      'function weird() {',
+      '  const example = `template ```nested``` end`;',
+      '  return example;',
+      '}',
+    ].join('\n');
+
+    const ctx = baseCtx({
+      files: [
+        annotatedFile({
+          groups: [
+            annotatedGroup({
+              name: 'weird',
+              startLine: 1,
+              endLine: 4,
+              changePoints: [annotatedChangePoint({ comment: 'check the fence', functionName: 'weird' })],
+            }),
+          ],
+        }),
+      ],
+      sources: { 'web/sims/js/selector.js': sourceWithFence },
+    });
+
+    const prompt = toClaudePrompt(ctx);
+    const match = prompt.match(/Function 原始碼：\n(`+)\n/);
+    assert.ok(match, 'expected a fenced code block after the source label');
+    const fenceLength = match[1].length;
+    const longestInner = longestBacktickRun(sourceWithFence);
+    assert.ok(
+      fenceLength > longestInner,
+      `fence length ${fenceLength} must exceed the longest embedded backtick run ${longestInner}`,
+    );
+  });
+
+  test('wraps the diff block in a fence long enough to survive embedded backtick content (finding 2)', () => {
+    const trickyText = 'const s = `a ```b``` c`;';
+    const ctx = baseCtx({
+      files: [
+        annotatedFile({
+          groups: [
+            annotatedGroup({
+              changePoints: [
+                annotatedChangePoint({
+                  comment: 'check this diff',
+                  lines: [{ type: '+', text: trickyText, oldLine: null, newLine: 5 }],
+                }),
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const prompt = toClaudePrompt(ctx);
+    const match = prompt.match(/Diff：\n(`+)diff\n/);
+    assert.ok(match, 'expected a fenced diff block after the diff label');
+    const fenceLength = match[1].length;
+    const longestInner = longestBacktickRun(`+${trickyText}`);
+    assert.ok(
+      fenceLength > longestInner,
+      `fence length ${fenceLength} must exceed the longest embedded backtick run ${longestInner}`,
+    );
+  });
+
+  test('wraps orphan diff snapshots in a fence long enough to survive embedded backtick content (finding 2)', () => {
+    const trickyDiff = '+const s = `a ```b``` c`;';
+    const ctx = baseCtx({
+      orphans: [
+        {
+          key: 'k1',
+          text: 'orphan text',
+          updatedAt: '2026-07-19T10:00:00.000Z',
+          filePath: 'src/gone.js',
+          functionName: 'deletedFn',
+          diffText: trickyDiff,
+        },
+      ],
+    });
+
+    const prompt = toClaudePrompt(ctx);
+    const match = prompt.match(/Diff 快照：\n(`+)diff\n/);
+    assert.ok(match, 'expected a fenced diff block after the orphan diff snapshot label');
+    const fenceLength = match[1].length;
+    const longestInner = longestBacktickRun(trickyDiff);
+    assert.ok(
+      fenceLength > longestInner,
+      `fence length ${fenceLength} must exceed the longest embedded backtick run ${longestInner}`,
+    );
+  });
+
   test('returns a non-empty explanatory string when there are no comments at all, without throwing', () => {
     const ctx = baseCtx({
       files: [annotatedFile({ groups: [annotatedGroup({ changePoints: [annotatedChangePoint({ comment: null })] })] })],
@@ -506,6 +629,52 @@ describe('toMarkdown', () => {
     assert.ok(md.includes('src/gone.js'));
     assert.ok(md.includes('deletedFn'));
     assert.ok(md.includes('this code is gone now'));
+  });
+
+  test('does not claim there are no comments when an orphan carries a real comment (finding 1)', () => {
+    const ctx = baseCtx({
+      files: [
+        annotatedFile({
+          groups: [annotatedGroup({ changePoints: [annotatedChangePoint({ comment: null })] })],
+        }),
+      ],
+      orphans: [
+        {
+          key: 'orphankey1234567',
+          text: 'this is a real orphaned comment',
+          updatedAt: '2026-07-19T10:00:00.000Z',
+          filePath: 'src/gone.js',
+          functionName: 'deletedFn',
+          diffText: '+this code no longer exists',
+        },
+      ],
+      stats: { total: 0, checked: 0, comments: 1 },
+    });
+
+    const md = toMarkdown(ctx);
+    assert.ok(
+      !md.includes('這次 review 沒有留下 comment。'),
+      'must not claim there are no comments when an orphan comment exists',
+    );
+    assert.ok(md.includes('## 孤兒 comment'));
+    assert.ok(md.includes('this is a real orphaned comment'));
+  });
+
+  test('with multiple files, only files containing a commented change point get a heading (finding 3)', () => {
+    const commentedFile = annotatedFile({
+      path: 'web/sims/js/selector.js',
+      groups: [annotatedGroup({ changePoints: [annotatedChangePoint({ comment: 'keep me' })] })],
+    });
+    const silentFile = annotatedFile({
+      path: 'src/silent.js',
+      groups: [annotatedGroup({ changePoints: [annotatedChangePoint({ comment: null })] })],
+    });
+
+    const ctx = baseCtx({ files: [commentedFile, silentFile] });
+    const md = toMarkdown(ctx);
+
+    assert.ok(md.includes('## web/sims/js/selector.js'), 'file with a commented change point should get a heading');
+    assert.ok(!md.includes('## src/silent.js'), 'file with no commented change points should not get a heading');
   });
 
   test('with no comments anywhere, still outputs the header and stats line, plus a note, not an empty string', () => {
