@@ -238,6 +238,33 @@ describe('buildTree — 刪除行的游標規則', () => {
     assert.equal(file.groups[0].changePoints[0].newStart, 11);
     assert.equal(file.groups[0].changePoints[0].newEnd, 11);
   });
+
+  test('非預期的 line.type（既非 "-" 也非 "+"/" "）被跳過，不會用 null newLine 污染 cursor', () => {
+    const diffs = [
+      fileDiff('src/a.js', [
+        hunk(10, [
+          ctx('keep', 10, 10),
+          // 假設性的未來 line type：不是 '-'，也不是 '+' / ' '，且沒有 newLine。
+          // 若程式碼用 `type !== '-'` 判斷，會把它當成 add/context 處理，
+          // 讀到 undefined 的 newLine 並把 cursor 污染成 NaN，
+          // 導致緊接著的刪除行位置也跟著錯。
+          { type: '~', text: 'unexpected', oldLine: 11, newLine: null },
+          del('gone', 11),
+        ]),
+      ]),
+    ];
+    const ranges = { 'src/a.js': [{ name: 'foo', startLine: 1, endLine: 100 }] };
+
+    const file = buildTree(diffs, ranges)[0];
+
+    const cp = file.groups[0].changePoints[0];
+    // cursor 沒被污染：del 用的仍是 ctx 行推進後的正確位置 11。
+    assert.equal(cp.newStart, 10);
+    assert.equal(cp.newEnd, 11);
+    assert.equal(cp.diffText, '-gone');
+    // 未預期類型的行本身被跳過，不進入 segment.lines。
+    assert.equal(cp.lines.some((line) => line.type === '~'), false);
+  });
 });
 
 describe('buildTree — group 建立與排序', () => {
@@ -343,6 +370,102 @@ describe('buildTree — group 建立與排序', () => {
     );
   });
 
+  test('同名但不同範圍的兩個 function 被單一 hunk 橫跨時仍拆成兩個 segment（不比對名字，比對 range 物件 identity）', () => {
+    const diffs = [
+      fileDiff('src/a.js', [hunk(10, [add('a', 10), add('b', 21)])]),
+    ];
+    const ranges = {
+      'src/a.js': [
+        { name: 'handle', startLine: 1, endLine: 20 },
+        { name: 'handle', startLine: 21, endLine: 40 },
+      ],
+    };
+
+    const file = buildTree(diffs, ranges)[0];
+
+    assert.equal(file.total, 2);
+    assert.equal(file.groups.length, 2);
+
+    assert.equal(file.groups[0].name, 'handle');
+    assert.equal(file.groups[0].startLine, 1);
+    assert.equal(file.groups[0].endLine, 20);
+    assert.equal(file.groups[0].total, 1);
+    assert.equal(file.groups[0].changePoints[0].newStart, 10);
+    assert.equal(file.groups[0].changePoints[0].newEnd, 10);
+
+    assert.equal(file.groups[1].name, 'handle');
+    assert.equal(file.groups[1].startLine, 21);
+    assert.equal(file.groups[1].endLine, 40);
+    assert.equal(file.groups[1].total, 1);
+    assert.equal(file.groups[1].changePoints[0].newStart, 21);
+    assert.equal(file.groups[1].changePoints[0].newEnd, 21);
+  });
+
+  test('hunk 抵達順序非遞增時，groups 仍依 newStart 遞增排序', () => {
+    const diffs = [
+      fileDiff('src/a.js', [
+        hunk(35, [add('in-bar', 35)]),
+        hunk(5, [add('top', 5)]),
+        hunk(15, [add('in-foo', 15)]),
+      ]),
+    ];
+    const ranges = {
+      'src/a.js': [
+        { name: 'foo', startLine: 10, endLine: 20 },
+        { name: 'bar', startLine: 30, endLine: 40 },
+      ],
+    };
+
+    const file = buildTree(diffs, ranges)[0];
+
+    assert.equal(file.total, 3);
+    assert.deepEqual(
+      file.groups.map((g) => g.name),
+      [null, 'foo', 'bar'],
+    );
+    assert.deepEqual(
+      file.groups.map((g) => g.changePoints[0].newStart),
+      [5, 15, 35],
+    );
+  });
+
+  test('排序鍵是「每個 group 最小的 newStart」，不是出現順序、也不是最大的 newStart', () => {
+    // 刻意讓「插入順序」「依 min(newStart) 排序」「依 max(newStart) 排序」三種結果互不相同，
+    // 這樣不管是刪掉 sort（=看插入順序）還是把排序鍵改成 max，測試都會抓到。
+    // A：單一變更點 newStart=50（min=max=50），最先出現。
+    // B：兩個變更點 newStart=10, 40（min=10, max=40），第二個出現。
+    // C：單一變更點 newStart=25（min=max=25），nested 在 B 範圍內，第三個出現。
+    const diffs = [
+      fileDiff('src/a.js', [
+        hunk(50, [add('a-only', 50)]),
+        hunk(10, [add('b-1', 10)]),
+        hunk(40, [add('b-2', 40)]),
+        hunk(25, [add('c-only', 25)]),
+      ]),
+    ];
+    const ranges = {
+      'src/a.js': [
+        { name: 'A', startLine: 45, endLine: 100 },
+        { name: 'B', startLine: 1, endLine: 44 },
+        { name: 'C', startLine: 21, endLine: 30 },
+      ],
+    };
+
+    const file = buildTree(diffs, ranges)[0];
+
+    assert.equal(file.total, 4);
+    // 插入順序會是 [A, B, C]；依 max(newStart) 排序會是 [C(25), B(40), A(50)]。
+    // 正確答案（依 min(newStart) 遞增）是 [B(10), C(25), A(50)]。
+    assert.deepEqual(
+      file.groups.map((g) => g.name),
+      ['B', 'C', 'A'],
+    );
+    assert.deepEqual(
+      file.groups.map((g) => g.total),
+      [2, 1, 1],
+    );
+  });
+
   test('各層 total 正確加總', () => {
     const diffs = [
       fileDiff('src/a.js', [
@@ -411,6 +534,23 @@ describe('buildTree — 降級與邊界情況', () => {
     assert.equal(file.groups.length, 1);
     assert.equal(file.groups[0].name, null);
     assert.equal(file.groups[0].changePoints[0].functionName, null);
+  });
+
+  test('檔名剛好等於 Object.prototype 上的內建鍵（constructor / toString / __proto__）不會誤判為有效 ranges', () => {
+    for (const path of ['constructor', 'toString', '__proto__']) {
+      const diffs = [fileDiff(path, [hunk(1, [add('a', 1)])])];
+
+      // rangesByPath 沒有這個檔案的「自有」鍵，但 {}['constructor'] 等
+      // 會透過 prototype chain 取到內建、truthy 的值，若查表用 `[]` 存取
+      // 就會誤判為「有 ranges」而非落到 `|| []` 的降級路徑。
+      const file = buildTree(diffs, {})[0];
+
+      assert.equal(file.path, path);
+      assert.equal(file.total, 1);
+      assert.equal(file.groups.length, 1);
+      assert.equal(file.groups[0].name, null);
+      assert.equal(file.groups[0].changePoints[0].functionName, null);
+    }
   });
 
   test('binary 檔得到空 groups、total 0', () => {

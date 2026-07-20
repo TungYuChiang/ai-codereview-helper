@@ -16,7 +16,12 @@ export function buildTree(fileDiffs, rangesByPath) {
 }
 
 function buildFileNode(fileDiff, rangesByPath) {
-  const ranges = (rangesByPath && rangesByPath[fileDiff.path]) || [];
+  // 用 Object.hasOwn 而非 `[]` 直接取值：若檔名剛好等於
+  // 'constructor' / 'toString' / '__proto__' 之類的內建鍵，`[]` 存取會沿著
+  // prototype chain 拿到一個 truthy 的非陣列值，讓 `|| []` 的降級判斷失效。
+  const ranges =
+    (rangesByPath && Object.hasOwn(rangesByPath, fileDiff.path) && rangesByPath[fileDiff.path]) ||
+    [];
   const entries = collectChangePoints(fileDiff, ranges);
   const groups = groupChangePoints(entries);
 
@@ -37,6 +42,9 @@ function buildFileNode(fileDiff, rangesByPath) {
  * 依 hunk 順序走訪所有行，切成 segment，產出 ChangePoint（保持檔案中的先後順序）。
  * 回傳 { changePoint, owner } — owner 是該變更點所屬的 FunctionRange 物件（檔案層為 null），
  * group 階段用它辨識「同名但不同範圍」的兩個 function。
+ *
+ * 假設 fileDiff.hunks 依 newStart 遞增排列（真實 git diff 輸出即是如此）；
+ * 下游 groupChangePoints() 的排序邏輯依賴這個順序假設才能正確運作。
  */
 function collectChangePoints(fileDiff, ranges) {
   const entries = [];
@@ -54,12 +62,17 @@ function collectChangePoints(fileDiff, ranges) {
 
     for (const line of hunk.lines) {
       let position;
-      if (line.type === '-') {
+      if (line.type === '+' || line.type === ' ') {
+        position = line.newLine;
+        cursor = line.newLine + 1;
+      } else if (line.type === '-') {
         // 刪除行的 newLine 為 null，位置＝這行「原本會出現的位置」，游標不前進。
         position = cursor;
       } else {
-        position = line.newLine;
-        cursor = line.newLine + 1;
+        // 非預期的 line.type：目前的 git.js 只會產出 '+' / '-' / ' '，但若上游
+        // 未來放寬了這個約束，寧可跳過這行也不要讓 cursor 被 null/undefined 污染
+        // （否則後面每一個刪除行的位置都會被連帶算錯）。
+        continue;
       }
 
       const owner = findOwner(ranges, position);
@@ -70,6 +83,8 @@ function collectChangePoints(fileDiff, ranges) {
         segment = { owner, lines: [], newStart: position, newEnd: position };
       }
 
+      // segment.lines 直接引用傳入的 Line 物件（不複製）；下游只能讀取，不可修改，
+      // 否則會違反 buildTree 的「不修改輸入」保證。
       segment.lines.push(line);
       if (position < segment.newStart) segment.newStart = position;
       if (position > segment.newEnd) segment.newEnd = position;
