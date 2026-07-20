@@ -187,19 +187,19 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 - **Tier**: 2
 - **Touches**: `public/style.css`, `public/app.js`, `public/index.html`, `public/vendor/fonts/`
 - **Acceptance**:
-  - [ ] 色彩全部走語意 token，元件內無裸 hex
-  - [ ] 字體 vendor 在 `public/vendor/fonts/`，離線可用，不連 CDN
-  - [ ] 樹的三層在不看縮排的情況下也能分辨（字體 / 字重 / 字級各異）
-  - [ ] 檔案與 function 層有細進度條，可掃視「還剩多少沒看」
-  - [ ] 變更點以左側色條表達狀態，未讀 / 當前 / 已讀 / 當前+已讀 四態皆可辨
-  - [ ] 變更點標題列 sticky
-  - [ ] diff 行用低飽和底色，Prism 語法上色仍清晰可見
-  - [ ] 行號使用 tabular numerals，捲動時不跳動
-  - [ ] focus ring 明顯且未被移除；當前態強度高於 hover
-  - [ ] checkbox 與 select 已重繪，深色下不出現作業系統亮色控制項
-  - [ ] `prefers-reduced-motion` 時關閉平滑捲動與過場
-  - [ ] `prefers-color-scheme: light` 有可用的亮色對應
-- **Status**: Pending
+  - [x] 色彩全部走語意 token，元件內無裸 hex
+  - [x] 字體 vendor 在 `public/vendor/fonts/`，離線可用，不連 CDN
+  - [x] 樹的三層在不看縮排的情況下也能分辨（字體 / 字重 / 字級各異）
+  - [x] 檔案與 function 層有細進度條，可掃視「還剩多少沒看」
+  - [x] 變更點以左側色條表達狀態，未讀 / 當前 / 已讀 / 當前+已讀 四態皆可辨
+  - [x] 變更點標題列 sticky
+  - [x] diff 行用低飽和底色，Prism 語法上色仍清晰可見
+  - [x] 行號使用 tabular numerals，捲動時不跳動
+  - [x] focus ring 明顯且未被移除；當前態強度高於 hover
+  - [x] checkbox 與 select 已重繪，深色下不出現作業系統亮色控制項
+  - [x] `prefers-reduced-motion` 時關閉平滑捲動與過場
+  - [x] `prefers-color-scheme: light` 有可用的亮色對應
+- **Status**: Completed (`620672a`..`e77b5b7`)
 
 ### ui-comments-export
 - **Spec 章節**: 畫面 + 匯出 — 前端部分
@@ -253,8 +253,8 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 
 | Status | Count |
 |--------|-------|
-| Pending | 3 |
+| Pending | 2 |
 | In Progress | 0 |
-| Completed | 9 |
+| Completed | 10 |
 | Failed | 0 |
 | Total | 12 |
