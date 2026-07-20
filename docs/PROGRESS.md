@@ -211,11 +211,11 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 - **Tier**: 2
 - **Touches**: `public/app.js`, `public/style.css`
 - **Acceptance**:
-  - [ ] 可對變更點新增 / 編輯 / 刪除 comment 並持久化
-  - [ ] `Esc` 取消編輯、`⌘Enter` 存檔
-  - [ ] 孤兒 comment 有專區呈現，可選擇丟棄或保留
-  - [ ] 兩顆匯出按鈕皆複製到剪貼簿並顯示成功回饋
-- **Status**: Pending
+  - [x] 可對變更點新增 / 編輯 / 刪除 comment 並持久化
+  - [x] `Esc` 取消編輯、`⌘Enter` 存檔
+  - [x] 孤兒 comment 有專區呈現，可選擇丟棄或保留
+  - [x] 兩顆匯出按鈕皆複製到剪貼簿並顯示成功回饋
+- **Status**: Completed (`82ebbb8`)
 
 ### ui-keyboard-help
 - **Spec 章節**: 畫面 / 鍵盤
@@ -227,13 +227,13 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 - **Tier**: 2
 - **Touches**: `public/app.js`, `public/style.css`
 - **Acceptance**:
-  - [ ] `j`/`k` 在變更點間移動；`u` 跳到下一個未讀
-  - [ ] `x` 勾起來時自動跳下一個，取消勾時不跳
-  - [ ] `1`/`2` 切換 unified / side-by-side；`f` 折疊展開 function
-  - [ ] `space` 維持瀏覽器捲動行為
-  - [ ] `?` 開啟速查表浮層、`Esc` 關閉；角落有常駐 `?` 按鈕
-  - [ ] 編輯 comment 時鍵盤快捷鍵不誤觸
-- **Status**: Pending
+  - [x] `j`/`k` 在變更點間移動；`u` 跳到下一個未讀
+  - [x] `x` 勾起來時自動跳下一個，取消勾時不跳
+  - [x] `1`/`2` 切換 unified / side-by-side；`f` 折疊展開 function
+  - [x] `space` 維持瀏覽器捲動行為
+  - [x] `?` 開啟速查表浮層、`Esc` 關閉；角落有常駐 `?` 按鈕
+  - [x] 編輯 comment 時鍵盤快捷鍵不誤觸
+- **Status**: Completed (`cf2362d`..`e0c2c85`)
 
 ### jarvis-skill
 - **Spec 章節**: 定位與啟動 — jarvis skill
@@ -253,8 +253,8 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 
 | Status | Count |
 |--------|-------|
-| Pending | 2 |
+| Pending | 0 |
 | In Progress | 0 |
-| Completed | 10 |
+| Completed | 12 |
 | Failed | 0 |
 | Total | 12 |
