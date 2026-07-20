@@ -79,6 +79,14 @@ function collectFromStatement(node, ranges) {
           pushRange(ranges, decl.id.name, decl.init);
         } else if (decl.init.type === 'ObjectExpression') {
           collectFromObjectLiteral(decl.id.name, decl.init, ranges);
+        } else {
+          // Revealing-module pattern: var API = (function () { ... })();
+          // Pierce into the IIFE body like the bare-statement IIFE path does;
+          // neither the IIFE nor the variable itself produces an entry.
+          const iifeCallee = getIifeCallee(decl.init);
+          if (iifeCallee) {
+            collectFromFunctionBody(iifeCallee, ranges);
+          }
         }
       }
       break;

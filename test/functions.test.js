@@ -193,6 +193,106 @@ describe('getFunctionRanges — top-level IIFE is treated as top-level scope', (
   });
 });
 
+describe('getFunctionRanges — revealing-module IIFE (var X = (function(){})()) is pierced', () => {
+  test('basic revealing module: var API = (function(){...})()', () => {
+    const content =
+      `var API = (function () {\n` +
+      `  function realThing() {\n    return 1;\n  }\n\n` +
+      `  return { realThing: realThing };\n` +
+      `})();\n`;
+    const result = getFunctionRanges('foo.js', content);
+    assert.deepEqual(result, [{ name: 'realThing', startLine: 2, endLine: 4 }]);
+  });
+
+  test('neither the IIFE nor the assigned variable itself produces an entry', () => {
+    const content =
+      `var API = (function () {\n` +
+      `  function realThing() {\n    return 1;\n  }\n` +
+      `  return { realThing: realThing };\n` +
+      `})();\n`;
+    const result = getFunctionRanges('foo.js', content);
+    const names = result.map((r) => r.name);
+    assert.ok(!names.includes('API'));
+    assert.deepEqual(result, [{ name: 'realThing', startLine: 2, endLine: 4 }]);
+  });
+
+  test('call-inside-parens variant: var API = (function(){}())', () => {
+    const content =
+      `var API = (function () {\n` +
+      `  function realThing() {\n    return 1;\n  }\n` +
+      `}());\n`;
+    const result = getFunctionRanges('foo.js', content);
+    assert.deepEqual(result, [{ name: 'realThing', startLine: 2, endLine: 4 }]);
+  });
+
+  test('arrow function form: var API = (() => {})()', () => {
+    const content =
+      `var API = (() => {\n` +
+      `  function realThing() {\n    return 1;\n  }\n` +
+      `  return { realThing: realThing };\n` +
+      `})();\n`;
+    const result = getFunctionRanges('foo.js', content);
+    assert.deepEqual(result, [{ name: 'realThing', startLine: 2, endLine: 4 }]);
+  });
+
+  test('prefixed forms as variable initializer: !, +, void', () => {
+    const bang = `var a1 = !function () {\n  function a() {\n    return 1;\n  }\n}();\n`;
+    const plus = `var a2 = +function () {\n  function b() {\n    return 1;\n  }\n}();\n`;
+    const voided = `var a3 = void function () {\n  function c() {\n    return 1;\n  }\n}();\n`;
+
+    assert.deepEqual(getFunctionRanges('foo.js', bang), [
+      { name: 'a', startLine: 2, endLine: 4 },
+    ]);
+    assert.deepEqual(getFunctionRanges('foo.js', plus), [
+      { name: 'b', startLine: 2, endLine: 4 },
+    ]);
+    assert.deepEqual(getFunctionRanges('foo.js', voided), [
+      { name: 'c', startLine: 2, endLine: 4 },
+    ]);
+  });
+
+  test('let/const assigned to a revealing-module IIFE are pierced the same way', () => {
+    const letContent =
+      `let API = (function () {\n  function realThing() {\n    return 1;\n  }\n})();\n`;
+    const constContent =
+      `const API = (function () {\n  function realThing() {\n    return 1;\n  }\n})();\n`;
+
+    assert.deepEqual(getFunctionRanges('foo.js', letContent), [
+      { name: 'realThing', startLine: 2, endLine: 4 },
+    ]);
+    assert.deepEqual(getFunctionRanges('foo.js', constContent), [
+      { name: 'realThing', startLine: 2, endLine: 4 },
+    ]);
+  });
+
+  test('nested revealing-module IIFEs are pierced all the way through', () => {
+    const content =
+      `var Outer = (function () {\n` +
+      `  var Inner = (function () {\n` +
+      `    function deep() {\n      return 1;\n    }\n` +
+      `    return { deep: deep };\n` +
+      `  })();\n` +
+      `  return Inner;\n` +
+      `})();\n`;
+    const result = getFunctionRanges('foo.js', content);
+    const names = result.map((r) => r.name);
+    assert.ok(!names.includes('Outer'));
+    assert.ok(!names.includes('Inner'));
+    assert.deepEqual(result, [{ name: 'deep', startLine: 3, endLine: 5 }]);
+  });
+
+  test('nested: revealing-module IIFE containing a bare-statement IIFE', () => {
+    const content =
+      `var Outer = (function () {\n` +
+      `  (function () {\n` +
+      `    function deep() {\n      return 1;\n    }\n` +
+      `  })();\n` +
+      `})();\n`;
+    const result = getFunctionRanges('foo.js', content);
+    assert.deepEqual(result, [{ name: 'deep', startLine: 3, endLine: 5 }]);
+  });
+});
+
 describe('getFunctionRanges — recognized extensions', () => {
   for (const ext of ['.js', '.mjs', '.cjs', '.jsx']) {
     test(`recognizes ${ext} files`, () => {
