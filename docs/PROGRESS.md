@@ -170,11 +170,11 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 - **Tier**: 2
 - **Touches**: `public/app.js`, `public/style.css`, `public/vendor/prism.*`
 - **Acceptance**:
-  - [ ] 變更點以 unified 正確呈現 `+` / `-` / context
-  - [ ] 可一鍵切換 side-by-side，左右對齊正確
-  - [ ] Prism 上色套用於 JS，未知語言不崩潰
-  - [ ] 已勾的變更點淡化、當前的高亮
-- **Status**: Pending
+  - [x] 變更點以 unified 正確呈現 `+` / `-` / context
+  - [x] 可一鍵切換 side-by-side，左右對齊正確
+  - [x] Prism 上色套用於 JS，未知語言不崩潰
+  - [x] 已勾的變更點淡化、當前的高亮
+- **Status**: Completed (`826d088`)
 
 ### visual-redesign
 - **Spec 章節**: 使用者於 2026-07-20 追加要求（原 spec 未涵蓋視覺設計）
@@ -253,8 +253,8 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 
 | Status | Count |
 |--------|-------|
-| Pending | 4 |
+| Pending | 3 |
 | In Progress | 0 |
-| Completed | 8 |
+| Completed | 9 |
 | Failed | 0 |
 | Total | 12 |
