@@ -65,5 +65,16 @@
        POINT 1 in app.js). -->
   <script src="vendor/prism.js" data-manual></script>
   <script type="module" src="app.js"></script>
+  <!-- Diagnostic recorder. Loads only when the URL carries ?diag=1, so it is
+       inert in normal use. Added to investigate a freeze that could not be
+       reproduced under controlled testing; a frozen renderer takes the console
+       with it, so this ships each record to the server as it happens. -->
+  <script>
+    if (new URLSearchParams(location.search).get('diag') === '1') {
+      const s = document.createElement('script');
+      s.src = 'diag.js';
+      document.head.appendChild(s);
+    }
+  </script>
 </body>
 </html>

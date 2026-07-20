@@ -7,7 +7,7 @@
 // the port. This is what lets tests use port 0 for an ephemeral server.
 
 import http from 'node:http';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, mkdir, appendFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve, sep, extname } from 'node:path';
 
@@ -361,12 +361,35 @@ function requireString(value, fieldName) {
 // API routing
 // ---------------------------------------------------------------------------
 
+// Appends one JSON line to $LCR_HOME/diag.log. Best-effort by design: every
+// caller wraps it, because a diagnostic that throws would take down the page
+// it is meant to observe.
+async function appendDiagLine(entry) {
+  const dir = config.baseDir();
+  await mkdir(dir, { recursive: true });
+  await appendFile(join(dir, 'diag.log'), JSON.stringify(entry) + '\n', 'utf8');
+}
+
 async function routeApi(req, res, url, pathname) {
   const { method } = req;
 
   // Applies to every /api/ route including the read-only GETs -- the argument
   // injection this guards against is itself a GET.
   assertNotCrossOrigin(req);
+
+  // Diagnostic sink. Only ever written to by public/diag.js, which the page
+  // loads solely when the URL carries ?diag=1. It exists because a frozen or
+  // killed renderer takes the console with it, so the record has to leave the
+  // browser as it happens rather than being read back afterwards.
+  if (pathname === '/api/diag' && method === 'POST') {
+    try {
+      const body = await readJsonBody(req);
+      await appendDiagLine(body);
+    } catch {
+      // A diagnostic that can break the thing it is diagnosing is worthless.
+    }
+    return sendJson(res, 200, { ok: true });
+  }
 
   if (pathname === '/api/repos' && method === 'GET') {
     return sendJson(res, 200, { repos: await config.listRepos() });
