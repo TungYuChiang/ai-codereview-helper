@@ -1102,3 +1102,126 @@ input[type="checkbox"]:checked::after {
   border-radius: 4px;
   padding: 1px 7px;
 }
+
+/* Upgraded from decorative <span> to a real <button> by app.js -- add the
+ * interactive affordance the static markup couldn't have (addendum: "有地
+ * 方可以參考就好" -- this is the primary entry point, not decoration). */
+#shortcut-bar .shortcut-help:hover,
+#shortcut-bar .shortcut-help:focus-visible {
+  border-color: var(--color-accent);
+  color: var(--color-fg);
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Keyboard shortcut overlay -- opened by the footer "?" button or the `?`  */
+/* key, closed by Esc or a backdrop click. The backdrop uses a flat black   */
+/* scrim rather than a design token: a modal scrim's job is to dim whatever */
+/* sits behind it regardless of light/dark theme, so it is the one place a  */
+/* literal rgba(0,0,0,...) is correct instead of a themed surface color.    */
+/* Radius/spacing reuse the same scale as the rest of the app (6px panel    */
+/* radius, 4/6/8/10/12/14px spacing steps) -- no new values introduced.     */
+/* ---------------------------------------------------------------------- */
+
+.shortcut-overlay-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.shortcut-overlay-backdrop[hidden] {
+  display: none;
+}
+
+.shortcut-overlay {
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  padding: 14px 16px;
+  min-width: 320px;
+  max-width: 420px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.shortcut-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.shortcut-overlay-heading {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+
+.shortcut-overlay-close {
+  padding: 2px 8px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.shortcut-overlay-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 14px;
+  margin: 0;
+}
+
+.shortcut-overlay-list dt {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-fg-dim);
+  background: var(--color-track);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 3px;
+  padding: 1px 6px;
+  white-space: nowrap;
+  align-self: start;
+}
+
+.shortcut-overlay-list dd {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--color-fg-dim);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Transient toast -- feedback for shortcuts with no visible change to show */
+/* (currently only `u` with nothing unread left). Note token, matching      */
+/* .hint's semantics (attention, not error/destructive).                    */
+/* ---------------------------------------------------------------------- */
+
+.shortcut-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 44px;
+  transform: translateX(-50%) translateY(4px);
+  background: var(--color-note-wash);
+  color: var(--color-note);
+  border: 1px solid var(--color-note);
+  border-radius: 4px;
+  padding: 5px 12px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+  z-index: 60;
+}
+
+.shortcut-toast.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
