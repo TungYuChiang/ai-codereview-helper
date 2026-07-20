@@ -711,7 +711,10 @@ describe('ref argument injection', () => {
   test('target starting with a dash is rejected with 400', async () => {
     const repoPath = await trackedTempRepo('inject-target');
     const repo = await registerRepo(baseUrl, repoPath);
-    const probe = join(tmpdir(), `lcr-PWNED-target-${process.pid}-${Date.now()}.txt`);
+    // Deliberately no "target" in the probe filename: a message-match against
+    // /target/ must succeed because the validator actually named the field,
+    // not because the probe's own name happened to contain the word.
+    const probe = join(tmpdir(), `lcr-PWNED-dash-${process.pid}-${Date.now()}.txt`);
 
     const res = await fetch(
       `${baseUrl}/api/diff?repo=${repo.id}&base=HEAD` +
@@ -719,7 +722,13 @@ describe('ref argument injection', () => {
     );
     assert.equal(res.status, 400);
     const body = await res.json();
-    assert.match(body.error, /target/);
+    // Must be the requireRef validation message specifically. Pre-fix, base
+    // and target were concatenated into a single `HEAD...--output=...` argv
+    // element before ever reaching git, so git parsed it as one (invalid)
+    // revision rather than as an option, and failed with its own "ambiguous
+    // argument" / "bad revision" error -- which also 400'd, but for the wrong
+    // reason and with no mention of "target must not start with '-'".
+    assert.match(body.error, /target must not start with '-'/);
     assert.equal(await fileExists(probe), false);
   });
 
@@ -730,6 +739,17 @@ describe('ref argument injection', () => {
     for (const bad of ['HEAD:../../etc/passwd', 'HEAD foo', 'HEAD\nfoo']) {
       const res = await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${encodeURIComponent(bad)}`);
       assert.equal(res.status, 400, `expected 400 for base=${JSON.stringify(bad)}`);
+      const body = await res.json();
+      // Pre-fix, `base` only ran through requireString (non-empty check), so
+      // these already 400'd -- from git's own "bad revision" error after the
+      // malformed ref reached the command line, not from our validation. A
+      // bare status check can't tell those apart; require the actual
+      // requireRef message.
+      assert.match(
+        body.error,
+        /must not contain whitespace, control characters, or ':'/,
+        `expected requireRef's message for base=${JSON.stringify(bad)}, got: ${body.error}`,
+      );
     }
   });
 
@@ -909,6 +929,18 @@ describe('malformed request handling', () => {
         body: raw,
       });
       assert.equal(res.status, 400, `body ${raw} should 400`);
+      const body = await res.json();
+      // Pre-fix, readJsonBody had no object check at all: `[].path`,
+      // `"hello".path` and `42..path`/`true.path` are all `undefined`, so the
+      // request still 400'd -- from requireString rejecting a missing
+      // `path`, not from readJsonBody rejecting the body shape. Assert on
+      // the actual message so this test can't pass for that unrelated
+      // reason.
+      assert.match(
+        body.error,
+        /request body must be a JSON object/,
+        `body ${raw} should fail with the JSON-object-shape message, got: ${body.error}`,
+      );
     }
   });
 

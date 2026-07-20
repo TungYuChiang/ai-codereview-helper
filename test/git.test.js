@@ -478,7 +478,24 @@ describe('option injection hardening', () => {
     const repo = await makeTempRepo();
     const probe = join(tmpdir(), `lcr-git-pwned-target-${process.pid}-${Date.now()}.txt`);
     try {
-      await assert.rejects(() => getDiff(repo, 'HEAD', `--output=${probe}`));
+      // A bare assert.rejects isn't enough here: `base` and `target` are
+      // joined into a single `${base}...${target}` string before it ever
+      // reaches git, so the malformed target was never a separate argv
+      // element for `--end-of-options` to neutralize -- it fails as a bad
+      // revision whether or not the fix is present. Pre-fix (no
+      // `--end-of-options`/`--`), git rejects it with "fatal: ambiguous
+      // argument ... unknown revision or path not in the working tree",
+      // plus a hint to use `--` -- the exact absence the fix addresses.
+      // Post-fix, the same string fails earlier as a plain "fatal: bad
+      // revision", proving the separators are actually being passed.
+      await assert.rejects(
+        () => getDiff(repo, 'HEAD', `--output=${probe}`),
+        (err) => {
+          assert.match(err.message, /bad revision/);
+          assert.doesNotMatch(err.message, /ambiguous argument/);
+          return true;
+        },
+      );
       await assertNoFileWritten(probe);
     } finally {
       await rm(repo, { recursive: true, force: true });

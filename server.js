@@ -224,19 +224,47 @@ function readJsonBody(req) {
 //      irrelevant to the site definition, and that is exactly the neighbour
 //      we do not want reaching in.
 //
-//   2. `Origin`, when present, must equal this server's own origin. A
-//      literal `null` Origin (sandboxed iframe, data: URL) is rejected too.
+//   2. `Origin`, when present, must equal `http(s)://<Host>`, where `Host` is
+//      whatever the client sent -- a literal `null` Origin (sandboxed
+//      iframe, data: URL) is rejected too. Be honest about what this proves:
+//      the comparison is against the client's own `Host` header, not against
+//      a value this server independently knows to be true, so a raw HTTP
+//      client can set `Host: evil.example` and `Origin: http://evil.example`
+//      and pass. That is not browser-exploitable -- a real browser always
+//      puts the true authority in `Host` and would also send
+//      `Sec-Fetch-Site: cross-site`, which step 1 already rejects -- and DNS
+//      rebinding defeats any header-based check no matter how it is written,
+//      so this is not a gap this code introduces. It just means this branch
+//      is not, by itself, a trustworthy origin check; the guarantee it adds
+//      is narrow (catches non-browser clients that forge `Origin` without
+//      also matching `Host`), and the real protection is steps 1 and 3.
 //
-//   3. If neither header is present, allow. This is the deliberate part: a
-//      browser attack always produces at least one of the two -- a
-//      cross-origin fetch/XHR always sends `Origin`, and every modern browser
-//      sends `Sec-Fetch-Site` on `<img>`, `<form>` and navigation requests
-//      alike. So "neither header" means a non-browser client (curl, the test
-//      suite, a script), which has no ambient cookies or credentials to abuse
-//      and therefore no CSRF exposure to close. Defaulting this case closed
-//      would break curl and the tests for no security gain; defaulting it
-//      open is safe precisely because the browser cases are already covered
-//      above.
+//   3. If neither header is present, allow. This is NOT because a browser
+//      attack is guaranteed to produce one of the two -- it isn't, and a
+//      future maintainer should not read this as an airtight origin check.
+//      A cross-origin `<img src=...>` / `<script src=...>` / `<link>` /
+//      `<form method=GET>` hit is a no-cors subresource load: browsers never
+//      attach `Origin` to it. `Sec-Fetch-Site` covers it on recent engines
+//      (Chrome 76+ (2019), Firefox 90+ (2021)) but Safari only added it in
+//      16.4 (2023); Safari <= 16.3, older WebViews, older Electron shells,
+//      and any header-stripping proxy in front of this server will deliver a
+//      genuine cross-origin GET with neither header, and it is let through.
+//
+//      That gap is accepted, not overlooked, because the residual risk is
+//      nil for reasons that do not depend on this header check: such a
+//      request can only be a GET, and only to the read-only routes; the
+//      response is opaque to the attacker under the same-origin policy; the
+//      one GET that used to have a dangerous side effect -- arbitrary file
+//      write via a ref like `--output=<path>` -- is closed at the ref
+//      validation and `--end-of-options` layers below, neither of which
+//      depends on origin; mutating endpoints are POST-only and additionally
+//      require a JSON `Content-Type` that a cross-origin HTML form cannot
+//      send; and the remaining impact of an allowed request is spawning a
+//      git subprocess -- a mild DoS, not a data or integrity issue. Defaulting
+//      this case closed would break curl and the test suite for no security
+//      gain beyond what those other layers already provide. If a future
+//      change adds a side-effecting GET, or removes the ref/Content-Type
+//      guards, that reasoning breaks and this default needs revisiting.
 // ---------------------------------------------------------------------------
 
 function assertNotCrossOrigin(req) {
