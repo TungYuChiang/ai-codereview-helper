@@ -249,12 +249,43 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
   - [ ] 說明如何協助使用者選定 repo 與 base/target ref
 - **Status**: Pending
 
+### api-file-lines
+- **來源**: 使用者於 2026-07-21 追加需求（原 spec 未涵蓋）
+- **Name**: 檔案行區間 endpoint
+- **Scope**: `GET /api/lines`，供前端展開 diff 周邊未修改的程式碼。
+- **Deps**: server-api
+- **Tier**: 2
+- **Touches**: `server.js`, `git.js`, `test/server.test.js`, `test/git.test.js`
+- **Status**: Completed (`40518d0`..`3eeea07`)
+
+### ui-sidebar
+- **來源**: 使用者於 2026-07-21 追加需求
+- **Name**: 側邊欄重做、三層可辨、可收合
+- **Deps**: ui-shell-tree
+- **Touches**: `public/`
+- **Status**: Completed (`90c1b2a`)，review 進行中
+
+### ui-code-themes
+- **來源**: 使用者於 2026-07-21 追加需求
+- **Name**: 程式碼區配色主題（八款，即時切換）
+- **Deps**: visual-redesign
+- **Touches**: `public/`
+- **Status**: In Progress
+
+### ui-expand-context
+- **來源**: 使用者於 2026-07-21 追加需求
+- **Name**: GitHub / GitLab 式的上下展開
+- **Deps**: api-file-lines, ui-sidebar
+- **Touches**: `public/`
+- **Status**: Pending
+
+
 ## Summary
 
 | Status | Count |
 |--------|-------|
-| Pending | 0 |
-| In Progress | 0 |
-| Completed | 12 |
+| Pending | 1 |
+| In Progress | 1 |
+| Completed | 14 |
 | Failed | 0 |
-| Total | 12 |
+| Total | 16 |
