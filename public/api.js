@@ -50,6 +50,12 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repo: repoId, key, text, context }),
     }),
+  setNote: (repoId, key, text, context) =>
+    apiFetch('/api/note', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repoId, key, text, context }),
+    }),
   discardOrphan: (repoId, key) =>
     apiFetch('/api/orphan/discard', {
       method: 'POST',

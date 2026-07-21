@@ -537,6 +537,142 @@ describe('/api/comment', () => {
   });
 });
 
+describe('/api/note', () => {
+  test('sets a note with context, and it appears on the next /api/diff -- independently of any comment', async () => {
+    const repoPath = await trackedTempRepo('note');
+    await writeFile(join(repoPath, 'foo.js'), 'function foo() {\n  return 1;\n}\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add foo']);
+    const base = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    await writeFile(join(repoPath, 'foo.js'), 'function foo() {\n  return 2;\n}\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'change foo']);
+    const target = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    const repo = await registerRepo(baseUrl, repoPath);
+    const diff = await (
+      await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${base}&target=${target}`)
+    ).json();
+    const changePoint = diff.files[0].groups[0].changePoints[0];
+    assert.equal(changePoint.comment, null);
+    assert.equal(changePoint.note, null);
+
+    const noteRes = await fetch(`${baseUrl}/api/note`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repo: repo.id,
+        key: changePoint.id,
+        text: 'this just changes the return value, nothing else',
+        context: {
+          filePath: changePoint.filePath,
+          functionName: changePoint.functionName,
+          diffText: changePoint.diffText,
+        },
+      }),
+    });
+    assert.equal(noteRes.status, 200);
+    assert.deepEqual(await noteRes.json(), { ok: true });
+
+    const after = await (
+      await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${base}&target=${target}`)
+    ).json();
+    assert.equal(after.files[0].groups[0].changePoints[0].note, 'this just changes the return value, nothing else');
+    // Setting a note must not make the change point look commented, and
+    // must not perturb the comment-only stats.comments counter.
+    assert.equal(after.files[0].groups[0].changePoints[0].comment, null);
+    assert.equal(after.stats.comments, 0);
+  });
+
+  test('empty text deletes the note', async () => {
+    const repoPath = await trackedTempRepo('note-delete');
+    await writeFile(join(repoPath, 'foo.js'), 'let x = 1;\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add foo']);
+    const base = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+    await writeFile(join(repoPath, 'foo.js'), 'let x = 2;\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'change foo']);
+    const target = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    const repo = await registerRepo(baseUrl, repoPath);
+    const diff = await (
+      await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${base}&target=${target}`)
+    ).json();
+    const changePoint = diff.files[0].groups[0].changePoints[0];
+
+    await fetch(`${baseUrl}/api/note`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repo: repo.id,
+        key: changePoint.id,
+        text: 'a note',
+        context: { filePath: changePoint.filePath, functionName: changePoint.functionName, diffText: changePoint.diffText },
+      }),
+    });
+
+    const delRes = await fetch(`${baseUrl}/api/note`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repo.id, key: changePoint.id, text: '' }),
+    });
+    assert.equal(delRes.status, 200);
+
+    const after = await (
+      await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${base}&target=${target}`)
+    ).json();
+    assert.equal(after.files[0].groups[0].changePoints[0].note, null);
+  });
+
+  test('returns 404 for unknown repo', async () => {
+    const res = await fetch(`${baseUrl}/api/note`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: 'no-such-id', key: 'abc', text: 'hi', context: { filePath: 'a', diffText: 'b' } }),
+    });
+    assert.equal(res.status, 404);
+  });
+
+  test('a comment and a note can coexist on the same change point, set and read back independently', async () => {
+    const repoPath = await trackedTempRepo('note-and-comment');
+    await writeFile(join(repoPath, 'foo.js'), 'function foo() {\n  return 1;\n}\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add foo']);
+    const base = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+    await writeFile(join(repoPath, 'foo.js'), 'function foo() {\n  return 2;\n}\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'change foo']);
+    const target = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    const repo = await registerRepo(baseUrl, repoPath);
+    const diff = await (
+      await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${base}&target=${target}`)
+    ).json();
+    const changePoint = diff.files[0].groups[0].changePoints[0];
+    const context = { filePath: changePoint.filePath, functionName: changePoint.functionName, diffText: changePoint.diffText };
+
+    await fetch(`${baseUrl}/api/comment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repo.id, key: changePoint.id, text: 'why 2?', context }),
+    });
+    await fetch(`${baseUrl}/api/note`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repo.id, key: changePoint.id, text: 'confirmed intentional', context }),
+    });
+
+    const after = await (
+      await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${base}&target=${target}`)
+    ).json();
+    const afterCp = after.files[0].groups[0].changePoints[0];
+    assert.equal(afterCp.comment, 'why 2?');
+    assert.equal(afterCp.note, 'confirmed intentional');
+  });
+});
+
 describe('/api/orphan/discard', () => {
   test('discards an orphaned comment', async () => {
     const repoPath = await trackedTempRepo('orphan');
@@ -591,6 +727,61 @@ describe('/api/orphan/discard', () => {
     ).json();
     assert.equal(finalDiff.orphans.length, 0);
   });
+
+  test('discards BOTH the comment and the note for an orphan that has both', async () => {
+    const repoPath = await trackedTempRepo('orphan-comment-and-note');
+    await writeFile(join(repoPath, 'foo.js'), 'let x = 1;\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add foo']);
+    const base = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+    await writeFile(join(repoPath, 'foo.js'), 'let x = 2;\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'change foo']);
+    const target = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    const repo = await registerRepo(baseUrl, repoPath);
+    const diff = await (
+      await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${base}&target=${target}`)
+    ).json();
+    const changePoint = diff.files[0].groups[0].changePoints[0];
+    const context = { filePath: changePoint.filePath, functionName: changePoint.functionName, diffText: changePoint.diffText };
+
+    await fetch(`${baseUrl}/api/comment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repo.id, key: changePoint.id, text: 'a question', context }),
+    });
+    await fetch(`${baseUrl}/api/note`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repo.id, key: changePoint.id, text: 'a note', context }),
+    });
+
+    // Change foo.js again so the previous change point becomes an orphan.
+    await writeFile(join(repoPath, 'foo.js'), 'let x = 3;\nlet y = 4;\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'change foo again']);
+    const target2 = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    const diffAfterOrphan = await (
+      await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${base}&target=${target2}`)
+    ).json();
+    assert.equal(diffAfterOrphan.orphans.length, 1);
+    assert.equal(diffAfterOrphan.orphans[0].text, 'a question');
+    assert.equal(diffAfterOrphan.orphans[0].note, 'a note');
+    const orphanKey = diffAfterOrphan.orphans[0].key;
+
+    await fetch(`${baseUrl}/api/orphan/discard`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repo.id, key: orphanKey }),
+    });
+
+    const finalDiff = await (
+      await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${base}&target=${target2}`)
+    ).json();
+    assert.equal(finalDiff.orphans.length, 0, 'neither the comment nor the note half should resurface as a leftover orphan');
+  });
 });
 
 describe('/api/export', () => {
@@ -633,6 +824,51 @@ describe('/api/export', () => {
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.match(body.text, /# Review:/);
+  });
+
+  test('a note-only change point (no comment) is excluded from the claude export but included in the markdown export', async () => {
+    const repoPath = await trackedTempRepo('export-note-only');
+    await writeFile(join(repoPath, 'foo.js'), 'function foo() {\n  return 1;\n}\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add foo']);
+    const base = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+    await writeFile(join(repoPath, 'foo.js'), 'function foo() {\n  return 2;\n}\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'change foo']);
+    const target = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    const repo = await registerRepo(baseUrl, repoPath);
+    const diff = await (
+      await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${base}&target=${target}`)
+    ).json();
+    const changePoint = diff.files[0].groups[0].changePoints[0];
+
+    await fetch(`${baseUrl}/api/note`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repo: repo.id,
+        key: changePoint.id,
+        text: 'this note-only marker must never reach the claude prompt',
+        context: { filePath: changePoint.filePath, functionName: changePoint.functionName, diffText: changePoint.diffText },
+      }),
+    });
+
+    const claudeText = await (
+      await fetch(`${baseUrl}/api/export?repo=${repo.id}&base=${base}&target=${target}&format=claude`)
+    ).json();
+    assert.ok(
+      !claudeText.text.includes('this note-only marker must never reach the claude prompt'),
+      'a note with no comment must be excluded from the Claude prompt export entirely',
+    );
+
+    const markdownText = await (
+      await fetch(`${baseUrl}/api/export?repo=${repo.id}&base=${base}&target=${target}&format=markdown`)
+    ).json();
+    assert.ok(
+      markdownText.text.includes('this note-only marker must never reach the claude prompt'),
+      'the same note must appear in the Markdown export',
+    );
   });
 
   test('invalid format returns 400', async () => {
@@ -1397,7 +1633,7 @@ describe('malformed request handling', () => {
   });
 
   test('a JSON body of literal null returns 400 on every body endpoint', async () => {
-    const endpoints = ['/api/repos', '/api/check', '/api/comment', '/api/orphan/discard'];
+    const endpoints = ['/api/repos', '/api/check', '/api/comment', '/api/note', '/api/orphan/discard'];
     for (const endpoint of endpoints) {
       const res = await fetch(`${baseUrl}${endpoint}`, {
         method: 'POST',

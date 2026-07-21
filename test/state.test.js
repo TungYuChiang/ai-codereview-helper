@@ -12,6 +12,8 @@ import {
   setChecked,
   setComment,
   deleteComment,
+  setNote,
+  deleteNote,
   discardOrphan,
 } from '../state.js';
 
@@ -176,13 +178,13 @@ describe('changePointKey', () => {
 describe('loadState', () => {
   test('returns an empty State when no file exists', async () => {
     const state = await loadState(REPO);
-    assert.deepEqual(state, { version: 1, checked: {}, comments: {} });
+    assert.deepEqual(state, { version: 1, checked: {}, comments: {}, notes: {} });
   });
 
   test('reads back a previously written state file', async () => {
     await setChecked(REPO, 'abc123', true);
     const state = await loadState(REPO);
-    assert.deepEqual(state, { version: 1, checked: { abc123: true }, comments: {} });
+    assert.deepEqual(state, { version: 1, checked: { abc123: true }, comments: {}, notes: {} });
   });
 
   test('writes to $LCR_HOME/state/<repoId>.json, not inside a reviewed project', async () => {
@@ -196,7 +198,7 @@ describe('loadState', () => {
     await writeFile(statePath(REPO), '{ not valid json');
 
     const state = await loadState(REPO);
-    assert.deepEqual(state, { version: 1, checked: {}, comments: {} });
+    assert.deepEqual(state, { version: 1, checked: {}, comments: {}, notes: {} });
 
     const entries = await readdir(stateDir());
     const backup = entries.find((f) => new RegExp(`^${REPO}\\.json\\.corrupt-\\d+$`).test(f));
@@ -208,7 +210,7 @@ describe('loadState', () => {
     await writeFile(statePath(REPO), JSON.stringify({ version: 2, checked: {}, comments: {} }));
 
     const state = await loadState(REPO);
-    assert.deepEqual(state, { version: 1, checked: {}, comments: {} });
+    assert.deepEqual(state, { version: 1, checked: {}, comments: {}, notes: {} });
 
     const entries = await readdir(stateDir());
     const backup = entries.find((f) => new RegExp(`^${REPO}\\.json\\.corrupt-\\d+$`).test(f));
@@ -220,7 +222,32 @@ describe('loadState', () => {
     await writeFile(statePath(REPO), JSON.stringify({ oops: true }));
 
     const state = await loadState(REPO);
-    assert.deepEqual(state, { version: 1, checked: {}, comments: {} });
+    assert.deepEqual(state, { version: 1, checked: {}, comments: {}, notes: {} });
+  });
+
+  test('a pre-notes-feature state file (no notes key at all) loads as valid, not corrupt -- notes defaults to {} without discarding real checked/comments data', async () => {
+    await mkdir(stateDir(), { recursive: true });
+    await writeFile(
+      statePath(REPO),
+      JSON.stringify({
+        version: 1,
+        checked: { abc123: true },
+        comments: { def456: { text: 'old comment', updatedAt: '2026-01-01T00:00:00.000Z', filePath: 'a', functionName: null, diffText: 'x' } },
+      }),
+    );
+
+    const state = await loadState(REPO);
+    assert.deepEqual(state, {
+      version: 1,
+      checked: { abc123: true },
+      comments: { def456: { text: 'old comment', updatedAt: '2026-01-01T00:00:00.000Z', filePath: 'a', functionName: null, diffText: 'x' } },
+      notes: {},
+    });
+
+    // Must NOT have been treated as corrupt -- no backup file written.
+    const entries = await readdir(stateDir());
+    const backup = entries.find((f) => /\.corrupt-\d+$/.test(f));
+    assert.equal(backup, undefined, 'a missing notes field alone must not trigger corrupt-recovery');
   });
 });
 
@@ -328,6 +355,47 @@ describe('annotate', () => {
     const changePoint = result.files[0].groups[0].changePoints[0];
     assert.equal(changePoint.comment, 'looks fine');
     assert.deepEqual(result.stats, { total: 1, checked: 0, comments: 1 });
+  });
+
+  test('note text is attached to the matching ChangePoint, independently of comment, and does not affect stats.comments', async () => {
+    const key = changePointKey(cp(), 0);
+    await setNote(REPO, key, 'this recomputes the session TTL', {
+      filePath: 'src/auth.js',
+      functionName: 'handleLogin',
+      diffText: cp().diffText,
+    });
+
+    const result = await annotate(REPO, [fileNode()]);
+    const changePoint = result.files[0].groups[0].changePoints[0];
+    assert.equal(changePoint.note, 'this recomputes the session TTL');
+    assert.equal(changePoint.comment, null, 'a note must not be readable through the comment field');
+    assert.deepEqual(result.stats, { total: 1, checked: 0, comments: 0 });
+  });
+
+  test('a change point can carry both a comment and a note at once, independently', async () => {
+    const key = changePointKey(cp(), 0);
+    await setComment(REPO, key, 'is this safe under concurrent writes?', {
+      filePath: 'src/auth.js',
+      functionName: 'handleLogin',
+      diffText: cp().diffText,
+    });
+    await setNote(REPO, key, 'confirmed: signToken() is idempotent', {
+      filePath: 'src/auth.js',
+      functionName: 'handleLogin',
+      diffText: cp().diffText,
+    });
+
+    const result = await annotate(REPO, [fileNode()]);
+    const changePoint = result.files[0].groups[0].changePoints[0];
+    assert.equal(changePoint.comment, 'is this safe under concurrent writes?');
+    assert.equal(changePoint.note, 'confirmed: signToken() is idempotent');
+  });
+
+  test('a change point with neither has comment: null and note: null', async () => {
+    const result = await annotate(REPO, [fileNode()]);
+    const changePoint = result.files[0].groups[0].changePoints[0];
+    assert.equal(changePoint.comment, null);
+    assert.equal(changePoint.note, null);
   });
 
   test('stats aggregate across multiple files', async () => {
@@ -569,6 +637,70 @@ describe('annotate — orphans', () => {
     // Still unrelated to the real change point in the tree.
     assert.equal(result.files[0].groups[0].changePoints[0].checked, false);
   });
+
+  // -- notes participate in orphaning too (task-personal-notes brief:
+  // losing a considered note on the same amend/rebase churn this tool
+  // exists to tolerate would be a worse outcome than losing a comment, so a
+  // note whose change point disappears is orphaned exactly like a comment).
+
+  test('a note (no comment) whose key has no matching current change point becomes an orphan with text: null, note: <the note>', async () => {
+    const orphanContext = {
+      filePath: 'src/gone.js',
+      functionName: 'deletedFn',
+      diffText: '+this code no longer exists in the diff',
+    };
+    const orphanKey = 'deadbeefdeadbeef';
+    await setNote(REPO, orphanKey, 'this used to special-case anonymous users', orphanContext);
+
+    const result = await annotate(REPO, [fileNode()]);
+
+    assert.equal(result.orphans.length, 1);
+    const orphan = result.orphans[0];
+    assert.equal(orphan.key, orphanKey);
+    assert.equal(orphan.text, null, 'no comment was ever set for this key');
+    assert.equal(orphan.note, 'this used to special-case anonymous users');
+    assert.equal(orphan.filePath, 'src/gone.js');
+    assert.equal(orphan.functionName, 'deletedFn');
+  });
+
+  test('an orphan with both a comment and a note carries both, independently', async () => {
+    const orphanContext = {
+      filePath: 'src/gone.js',
+      functionName: 'deletedFn',
+      diffText: '+this code no longer exists in the diff',
+    };
+    const orphanKey = 'deadbeefdeadbeef';
+    await setComment(REPO, orphanKey, 'please double check this before merging', orphanContext);
+    await setNote(REPO, orphanKey, 'confirmed safe, see PR #42', orphanContext);
+
+    const result = await annotate(REPO, [fileNode()]);
+
+    assert.equal(result.orphans.length, 1);
+    const orphan = result.orphans[0];
+    assert.equal(orphan.text, 'please double check this before merging');
+    assert.equal(orphan.note, 'confirmed safe, see PR #42');
+  });
+
+  test('a note matching a current change point is NOT listed as an orphan', async () => {
+    const key = changePointKey(cp(), 0);
+    await setNote(REPO, key, 'still relevant', {
+      filePath: 'src/auth.js',
+      functionName: 'handleLogin',
+      diffText: cp().diffText,
+    });
+
+    const result = await annotate(REPO, [fileNode()]);
+    assert.deepEqual(result.orphans, []);
+  });
+
+  test('orphans from comments-only and notes-only keys are merged into one list without duplication', async () => {
+    await setComment(REPO, 'comment-only-key', 'a stale comment', { filePath: 'a', functionName: null, diffText: 'x' });
+    await setNote(REPO, 'note-only-key', 'a stale note', { filePath: 'b', functionName: null, diffText: 'y' });
+
+    const result = await annotate(REPO, []);
+    const keys = result.orphans.map((o) => o.key).sort();
+    assert.deepEqual(keys, ['comment-only-key', 'note-only-key']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -759,6 +891,130 @@ describe('deleteComment', () => {
   });
 });
 
+describe('setNote', () => {
+  test('writes a NoteRecord with text, updatedAt (ISO 8601), and the context snapshot', async () => {
+    const before = Date.now();
+    await setNote(REPO, 'k1', 'needs a test', {
+      filePath: 'src/a.js',
+      functionName: 'foo',
+      diffText: '+x',
+    });
+    const after = Date.now();
+
+    const state = await loadState(REPO);
+    const record = state.notes.k1;
+    assert.equal(record.text, 'needs a test');
+    assert.equal(record.filePath, 'src/a.js');
+    assert.equal(record.functionName, 'foo');
+    assert.equal(record.diffText, '+x');
+    assert.match(record.updatedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    const ts = new Date(record.updatedAt).getTime();
+    assert.ok(ts >= before && ts <= after);
+  });
+
+  test('null functionName in context is preserved as null', async () => {
+    await setNote(REPO, 'k1', 'file-level note', {
+      filePath: 'src/a.js',
+      functionName: null,
+      diffText: '+x',
+    });
+    const state = await loadState(REPO);
+    assert.equal(state.notes.k1.functionName, null);
+  });
+
+  test('overwriting an existing note replaces text and updatedAt', async () => {
+    await setNote(REPO, 'k1', 'first draft', { filePath: 'a', functionName: null, diffText: 'x' });
+    const first = (await loadState(REPO)).notes.k1;
+    await delay(5);
+    await setNote(REPO, 'k1', 'revised', { filePath: 'a', functionName: null, diffText: 'x' });
+    const second = (await loadState(REPO)).notes.k1;
+
+    assert.equal(second.text, 'revised');
+    assert.notEqual(second.updatedAt, first.updatedAt);
+  });
+
+  test('empty string text deletes the note', async () => {
+    await setNote(REPO, 'k1', 'will be cleared', { filePath: 'a', functionName: null, diffText: 'x' });
+    await setNote(REPO, 'k1', '', { filePath: 'a', functionName: null, diffText: 'x' });
+
+    const state = await loadState(REPO);
+    assert.equal(Object.hasOwn(state.notes, 'k1'), false);
+  });
+
+  test('whitespace-only text deletes the note', async () => {
+    await setNote(REPO, 'k1', 'will be cleared', { filePath: 'a', functionName: null, diffText: 'x' });
+    await setNote(REPO, 'k1', '   \n\t  ', { filePath: 'a', functionName: null, diffText: 'x' });
+
+    const state = await loadState(REPO);
+    assert.equal(Object.hasOwn(state.notes, 'k1'), false);
+  });
+
+  test('setting a note for a key does not disturb an existing comment for the same key, or vice versa', async () => {
+    await setComment(REPO, 'k1', 'a question', { filePath: 'a', functionName: null, diffText: 'x' });
+    await setNote(REPO, 'k1', 'a note', { filePath: 'a', functionName: null, diffText: 'x' });
+
+    const state = await loadState(REPO);
+    assert.equal(state.comments.k1.text, 'a question');
+    assert.equal(state.notes.k1.text, 'a note');
+  });
+
+  test('does not disturb existing checked entries for other keys', async () => {
+    await setChecked(REPO, 'k-checked', true);
+    await setNote(REPO, 'k-note', 'hi', { filePath: 'a', functionName: null, diffText: 'x' });
+
+    const state = await loadState(REPO);
+    assert.equal(state.checked['k-checked'], true);
+  });
+
+  test('throws a readable Error when context.filePath is missing', async () => {
+    await assert.rejects(
+      () => setNote(REPO, 'k1', 'some text', { functionName: 'foo', diffText: '+x' }),
+      /filePath/,
+    );
+  });
+
+  test('throws a readable Error when context.diffText is missing', async () => {
+    await assert.rejects(
+      () => setNote(REPO, 'k1', 'some text', { filePath: 'src/a.js', functionName: 'foo' }),
+      /diffText/,
+    );
+  });
+
+  test('a missing/invalid context does not prevent deleting a note (empty text short-circuits before validation)', async () => {
+    await setNote(REPO, 'k1', 'will be cleared', { filePath: 'a', functionName: null, diffText: 'x' });
+    await assert.doesNotReject(() => setNote(REPO, 'k1', '', undefined));
+
+    const state = await loadState(REPO);
+    assert.equal(Object.hasOwn(state.notes, 'k1'), false);
+  });
+});
+
+describe('deleteNote', () => {
+  test('removes an existing note', async () => {
+    await setNote(REPO, 'k1', 'to be removed', { filePath: 'a', functionName: null, diffText: 'x' });
+    await deleteNote(REPO, 'k1');
+
+    const state = await loadState(REPO);
+    assert.equal(Object.hasOwn(state.notes, 'k1'), false);
+  });
+
+  test('is a silent no-op for a key with no note', async () => {
+    await assert.doesNotReject(() => deleteNote(REPO, 'never-existed'));
+  });
+
+  test('does not affect comments[key] or checked[key] for the same key', async () => {
+    await setChecked(REPO, 'k1', true);
+    await setComment(REPO, 'k1', 'a comment', { filePath: 'a', functionName: null, diffText: 'x' });
+    await setNote(REPO, 'k1', 'a note', { filePath: 'a', functionName: null, diffText: 'x' });
+    await deleteNote(REPO, 'k1');
+
+    const state = await loadState(REPO);
+    assert.equal(state.checked.k1, true);
+    assert.equal(state.comments.k1.text, 'a comment');
+    assert.equal(Object.hasOwn(state.notes, 'k1'), false);
+  });
+});
+
 describe('discardOrphan', () => {
   test('behaves identically to deleteComment: removes the comment record', async () => {
     await setComment(REPO, 'orphan-key', 'stale comment', {
@@ -778,6 +1034,42 @@ describe('discardOrphan', () => {
 
   test('is a silent no-op for a key with no comment', async () => {
     await assert.doesNotReject(() => discardOrphan(REPO, 'never-existed'));
+  });
+
+  test('removes the note record too, when only a note exists for the key', async () => {
+    await setNote(REPO, 'orphan-key', 'stale note', {
+      filePath: 'src/gone.js',
+      functionName: null,
+      diffText: '+dead',
+    });
+
+    let result = await annotate(REPO, []);
+    assert.equal(result.orphans.length, 1);
+
+    await discardOrphan(REPO, 'orphan-key');
+
+    result = await annotate(REPO, []);
+    assert.deepEqual(result.orphans, []);
+  });
+
+  test('discards BOTH the comment and the note for a key that has both, in one call', async () => {
+    const ctx = { filePath: 'src/gone.js', functionName: null, diffText: '+dead' };
+    await setComment(REPO, 'orphan-key', 'stale comment', ctx);
+    await setNote(REPO, 'orphan-key', 'stale note', ctx);
+
+    let result = await annotate(REPO, []);
+    assert.equal(result.orphans.length, 1);
+    assert.equal(result.orphans[0].text, 'stale comment');
+    assert.equal(result.orphans[0].note, 'stale note');
+
+    await discardOrphan(REPO, 'orphan-key');
+
+    const state = await loadState(REPO);
+    assert.equal(Object.hasOwn(state.comments, 'orphan-key'), false);
+    assert.equal(Object.hasOwn(state.notes, 'orphan-key'), false);
+
+    result = await annotate(REPO, []);
+    assert.deepEqual(result.orphans, [], 'no half-discarded orphan (e.g. note-only) should resurface');
   });
 });
 

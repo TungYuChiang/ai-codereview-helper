@@ -40,7 +40,17 @@ export function toClaudePrompt(ctx) {
     '請針對每一則實際查證程式碼（必要時打開檔案）並回答。';
 
   const entries = collectCommentedEntries(files);
-  const hasOrphans = Array.isArray(orphans) && orphans.length > 0;
+  // Notes are deliberately excluded from this export end to end -- see the
+  // brief's table: a note means "I understood this, recording it for
+  // myself", the opposite of "please check this". collectCommentedEntries
+  // above already only looks at changePoint.comment, so a note-only change
+  // point never becomes an entry here. Orphans need the same filter applied
+  // explicitly, because state.js's buildAnnotated now orphans a key that
+  // has *either* a comment or a note (or both) -- an orphan carrying only a
+  // note (commentOrphan.text === null) must not leak into this prompt just
+  // because it made it into the orphans array at all.
+  const commentedOrphans = (orphans ?? []).filter((orphan) => orphan.text);
+  const hasOrphans = commentedOrphans.length > 0;
 
   if (entries.length === 0 && !hasOrphans) {
     return `${intro}\n\n${NO_QUESTIONS_NOTE}`;
@@ -57,7 +67,7 @@ export function toClaudePrompt(ctx) {
   }
 
   if (hasOrphans) {
-    sections.push(formatClaudeOrphanSection(orphans));
+    sections.push(formatClaudeOrphanSection(commentedOrphans));
   }
 
   return sections.join('\n\n---\n\n');
@@ -157,18 +167,34 @@ function formatMarkdownFile(file) {
   return [`## ${file.path}`, ...groupSections].join('\n\n');
 }
 
+// Unlike the Claude prompt, Markdown is the export the brief calls out as
+// the natural home for notes ("a note about what a change actually does is
+// often the most useful thing to paste into Obsidian") -- so a change point
+// with a note but no comment still earns a heading here, where the same
+// change point would be invisible in the Claude prompt.
 function formatMarkdownGroup(group) {
-  const commented = (group.changePoints ?? []).filter((changePoint) => changePoint.comment);
-  if (commented.length === 0) return null;
+  const annotated = (group.changePoints ?? []).filter(
+    (changePoint) => changePoint.comment || changePoint.note,
+  );
+  if (annotated.length === 0) return null;
 
-  return commented.map((changePoint) => formatMarkdownChangePoint(group, changePoint)).join('\n\n');
+  return annotated.map((changePoint) => formatMarkdownChangePoint(group, changePoint)).join('\n\n');
 }
 
 function formatMarkdownChangePoint(group, changePoint) {
   const label = group.name === null ? FILE_LEVEL_LABEL : group.name;
   const heading = `### ${label}  (+${changePoint.newStart}..${changePoint.newEnd})`;
   const quote = quoteDiffText(changePoint.diffText);
-  return [heading, quote, changePoint.comment].join('\n\n');
+  const parts = [heading, quote];
+  // Comment stays unlabeled (exactly the pre-notes rendering, so existing
+  // comment-only output is byte-identical) -- the note gets an explicit
+  // "**Note:**" prefix so the two are never ambiguous when both are present
+  // on the same change point, and so a note-only entry (no comment at all)
+  // still reads as a deliberate note rather than an unlabeled stray
+  // paragraph.
+  if (changePoint.comment) parts.push(changePoint.comment);
+  if (changePoint.note) parts.push(`**Note:** ${changePoint.note}`);
+  return parts.join('\n\n');
 }
 
 function quoteDiffText(diffText) {
@@ -183,8 +209,14 @@ function formatMarkdownOrphanSection(orphans) {
     const label = orphan.functionName ?? FILE_LEVEL_LABEL;
     const heading = `### ${orphan.filePath ?? '(未知檔案)'} — ${label}`;
     const quote = quoteDiffText(orphan.diffText);
-    const note = '（此變更點已不在目前的 diff 中）';
-    return [heading, quote, note, orphan.text].join('\n\n');
+    const goneNote = '（此變更點已不在目前的 diff 中）';
+    const parts = [heading, quote, goneNote];
+    // Same independent nullability as the live-tree case above: an orphan
+    // can carry a comment, a note, or (unlike the Claude prompt, which
+    // filters these out entirely) both.
+    if (orphan.text) parts.push(orphan.text);
+    if (orphan.note) parts.push(`**Note:** ${orphan.note}`);
+    return parts.join('\n\n');
   });
 
   return ['## 孤兒 comment', ...items].join('\n\n');

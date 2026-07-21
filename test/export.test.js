@@ -26,6 +26,7 @@ function annotatedChangePoint(overrides = {}) {
     id: 'abc123deadbeef01',
     checked: true,
     comment: null,
+    note: null,
     ...overrides,
   };
 }

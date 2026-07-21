@@ -590,6 +590,29 @@ async function routeApi(req, res, url, pathname) {
     return sendJson(res, 200, { ok: true });
   }
 
+  // A sibling of /api/comment rather than a `type` field on the same route:
+  // comments and notes are independent per-change-point annotations (see
+  // state.js's setNote), each with its own simple "key/text/context ->
+  // {ok:true}" request/response shape. Folding them into one endpoint would
+  // only save one route declaration here at the cost of every caller having
+  // to pass and check a discriminator for no shared behavior beyond "call
+  // state.setX with these arguments" -- not worth it for two call sites this
+  // small.
+  if (pathname === '/api/note' && method === 'POST') {
+    const body = await readJsonBody(req);
+    const key = requireString(body.key, 'key');
+    if (typeof body.text !== 'string') {
+      throw new HttpError(400, 'text is required and must be a string');
+    }
+    const repo = await getRepoOr404(body.repo);
+    try {
+      await state.setNote(repo.id, key, body.text, body.context);
+    } catch (err) {
+      throw new HttpError(400, err.message);
+    }
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (pathname === '/api/orphan/discard' && method === 'POST') {
     const body = await readJsonBody(req);
     const key = requireString(body.key, 'key');

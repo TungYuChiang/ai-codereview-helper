@@ -1,5 +1,5 @@
-// state.js — progress persistence (checked / comments) and the content-hash
-// invalidation rule that lets a half-finished review survive a
+// state.js — progress persistence (checked / comments / notes) and the
+// content-hash invalidation rule that lets a half-finished review survive a
 // `git commit --amend` or rebase.
 //
 // Owns the *contents* of $LCR_HOME/state/<repoId>.json (the path itself is
@@ -20,7 +20,7 @@ import { createMutex } from './lock.js';
 const STATE_VERSION = 1;
 
 function emptyState() {
-  return { version: STATE_VERSION, checked: {}, comments: {} };
+  return { version: STATE_VERSION, checked: {}, comments: {}, notes: {} };
 }
 
 function isPlainObject(value) {
@@ -32,7 +32,15 @@ function isValidState(parsed) {
     isPlainObject(parsed) &&
     parsed.version === STATE_VERSION &&
     isPlainObject(parsed.checked) &&
-    isPlainObject(parsed.comments)
+    isPlainObject(parsed.comments) &&
+    // `notes` is allowed to be absent, not just present-and-valid: a state
+    // file written before this field existed (same STATE_VERSION -- the
+    // notes map is additive, not a breaking shape change) must still load
+    // as valid rather than being treated as corrupt and having its real
+    // checked[]/comments[] data backed up and discarded. See the
+    // normalization right after this check's call site in
+    // readStateUnlocked.
+    (parsed.notes === undefined || isPlainObject(parsed.notes))
   );
 }
 
@@ -139,6 +147,11 @@ async function readStateUnlocked(repoId) {
     return empty;
   }
 
+  // Pre-notes-feature files pass isValidState above without a `notes` key at
+  // all -- default it in memory (and let the next write persist it) rather
+  // than requiring every historical state file to be migrated up front.
+  if (!isPlainObject(parsed.notes)) parsed.notes = {};
+
   return parsed;
 }
 
@@ -182,31 +195,41 @@ export async function setChecked(repoId, key, checked) {
   });
 }
 
+// Shared shape/validation for both CommentRecord and NoteRecord -- comments
+// and notes persist identically (text + updatedAt + a filePath/functionName/
+// diffText snapshot so an orphan can still show the user *what* it was
+// about instead of just a hash); they only differ in which map they live in
+// and, at export time, which format(s) include them. `methodName` is
+// threaded through purely so the thrown error reads as coming from the
+// public function the caller actually called (setComment vs setNote),
+// matching each one's pre-existing wording exactly rather than a generic
+// message. A missing/non-string filePath or diffText would otherwise
+// silently degrade into an unexplained orphan later, so this fails loudly
+// instead. functionName may legitimately be null (e.g. a file-level
+// comment/note), so that one still defaults quietly.
+function buildAnnotationSnapshot(methodName, text, context) {
+  if (typeof context?.filePath !== 'string') {
+    throw new Error(`${methodName}: context.filePath is required and must be a string`);
+  }
+  if (typeof context?.diffText !== 'string') {
+    throw new Error(`${methodName}: context.diffText is required and must be a string`);
+  }
+  return {
+    text,
+    updatedAt: new Date().toISOString(),
+    filePath: context.filePath,
+    functionName: context.functionName ?? null,
+    diffText: context.diffText,
+  };
+}
+
 export async function setComment(repoId, key, text, context) {
   return getRepoLock(repoId)(async () => {
     const state = await readStateUnlocked(repoId);
     if (typeof text !== 'string' || text.trim() === '') {
       delete state.comments[key];
     } else {
-      // filePath/diffText are the snapshot fields that let an orphaned
-      // comment show the user *what* it was about instead of just a hash
-      // (see CommentRecord in the brief). A missing/non-string value here
-      // would silently degrade into an unexplained orphan later, so fail
-      // loudly now instead. functionName may legitimately be null (e.g. a
-      // file-level comment), so that one still defaults quietly.
-      if (typeof context?.filePath !== 'string') {
-        throw new Error('setComment: context.filePath is required and must be a string');
-      }
-      if (typeof context?.diffText !== 'string') {
-        throw new Error('setComment: context.diffText is required and must be a string');
-      }
-      state.comments[key] = {
-        text,
-        updatedAt: new Date().toISOString(),
-        filePath: context.filePath,
-        functionName: context.functionName ?? null,
-        diffText: context.diffText,
-      };
+      state.comments[key] = buildAnnotationSnapshot('setComment', text, context);
     }
     await writeStateUnlocked(repoId, state);
   });
@@ -224,8 +247,66 @@ export async function deleteComment(repoId, key) {
   return removeComment(repoId, key);
 }
 
+// ---------------------------------------------------------------------------
+// Notes -- a second, independent per-change-point annotation alongside
+// comments (see task-personal-notes brief). Deliberately its own top-level
+// map (state.notes), not a field tacked onto CommentRecord: a change point
+// can carry a comment, a note, both, or neither, entirely independently
+// (independent add/edit/delete, independent presence in state.json). They
+// share `changePointKey` -- a note's identity is "the same change point a
+// comment could be attached to", so reusing the identical ordinal-based key
+// means a note survives exactly the same amend/rebase line-shifts a comment
+// does, and is invalidated by exactly the same real content edits. See
+// buildAnnotated below for how `note` gets attached to each annotated
+// ChangePoint the same way `comment` does, and for why a note whose change
+// point disappears is orphaned (not silently dropped) exactly like a
+// comment is: the alternative -- discarding it on the very rebase/amend
+// churn this tool exists to tolerate -- would lose a considered record the
+// user explicitly wrote down for themselves, which is a worse failure mode
+// than a comment (a fleeting question that can just be re-asked) losing the
+// same content would be.
+// ---------------------------------------------------------------------------
+
+export async function setNote(repoId, key, text, context) {
+  return getRepoLock(repoId)(async () => {
+    const state = await readStateUnlocked(repoId);
+    if (typeof text !== 'string' || text.trim() === '') {
+      delete state.notes[key];
+    } else {
+      state.notes[key] = buildAnnotationSnapshot('setNote', text, context);
+    }
+    await writeStateUnlocked(repoId, state);
+  });
+}
+
+async function removeNote(repoId, key) {
+  return getRepoLock(repoId)(async () => {
+    const state = await readStateUnlocked(repoId);
+    delete state.notes[key];
+    await writeStateUnlocked(repoId, state);
+  });
+}
+
+export async function deleteNote(repoId, key) {
+  return removeNote(repoId, key);
+}
+
+// An orphan card in the UI represents one change-point *key*, not one
+// annotation type -- it can carry a comment, a note, or both (see
+// buildAnnotated's orphan collection below), and "Discard" on that card is
+// understood by the user as "make this whole entry go away", not "discard
+// whichever half I happened to be looking at". So this removes both records
+// for `key` in a single locked read-modify-write, rather than reusing
+// removeComment alone (the pre-notes behavior) and leaving a same-keyed note
+// to silently resurface as a new, half-explained orphan on the next
+// annotate().
 export async function discardOrphan(repoId, key) {
-  return removeComment(repoId, key);
+  return getRepoLock(repoId)(async () => {
+    const state = await readStateUnlocked(repoId);
+    delete state.comments[key];
+    delete state.notes[key];
+    await writeStateUnlocked(repoId, state);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +354,7 @@ function buildAnnotated(state, fileNodes) {
 
         const checked = state.checked[key] === true;
         const commentRecord = Object.hasOwn(state.comments, key) ? state.comments[key] : undefined;
+        const noteRecord = Object.hasOwn(state.notes, key) ? state.notes[key] : undefined;
         if (checked) groupChecked += 1;
         // Count distinct comment *keys*, not one per annotated change
         // point, so a comment can never be counted more than once even if
@@ -281,12 +363,19 @@ function buildAnnotated(state, fileNodes) {
           countedCommentKeys.add(key);
           statsComments += 1;
         }
+        // Deliberately no stats.notes counterpart: stats is the shared
+        // total/checked/comments summary the topbar badge and Markdown
+        // export's stats line already render, and neither surface asked for
+        // a notes count -- adding one here would be scope the brief never
+        // requested, on a return shape several tests pin with a full
+        // assert.deepEqual.
 
         return {
           ...changePoint,
           id: key,
           checked,
           comment: commentRecord ? commentRecord.text : null,
+          note: noteRecord ? noteRecord.text : null,
         };
       });
 
@@ -311,16 +400,45 @@ function buildAnnotated(state, fileNodes) {
     };
   });
 
-  const orphans = Object.entries(state.comments)
-    .filter(([key]) => !seenKeys.has(key))
-    .map(([key, record]) => ({
-      key,
-      text: record.text,
-      updatedAt: record.updatedAt,
-      filePath: record.filePath,
-      functionName: record.functionName,
-      diffText: record.diffText,
-    }))
+  // Orphan keys come from the UNION of state.comments and state.notes: a
+  // key can have a comment, a note, or both, and either one going stale
+  // (its change point no longer exists anywhere in the current tree) is
+  // enough to surface an orphan card for it. `text`/`note` are independently
+  // nullable on the orphan record for exactly that reason -- an orphan with
+  // only a note has `text: null`, one with only a comment has `note: null`,
+  // and one with both carries both. filePath/functionName/diffText come
+  // from whichever record exists (they are the same snapshot either way,
+  // taken from the same change point at the same time comments and notes
+  // are both written against it); updatedAt is the more recent of the two
+  // when both are present, so sort order reflects whichever annotation was
+  // actually touched last.
+  const orphanKeys = new Set([
+    ...Object.keys(state.comments).filter((key) => !seenKeys.has(key)),
+    ...Object.keys(state.notes).filter((key) => !seenKeys.has(key)),
+  ]);
+
+  const orphans = [...orphanKeys]
+    .map((key) => {
+      const commentRecord = Object.hasOwn(state.comments, key) ? state.comments[key] : undefined;
+      const noteRecord = Object.hasOwn(state.notes, key) ? state.notes[key] : undefined;
+      const snapshotSource = commentRecord ?? noteRecord;
+      const updatedAt =
+        commentRecord && noteRecord
+          ? commentRecord.updatedAt > noteRecord.updatedAt
+            ? commentRecord.updatedAt
+            : noteRecord.updatedAt
+          : snapshotSource.updatedAt;
+
+      return {
+        key,
+        text: commentRecord ? commentRecord.text : null,
+        note: noteRecord ? noteRecord.text : null,
+        updatedAt,
+        filePath: snapshotSource.filePath,
+        functionName: snapshotSource.functionName,
+        diffText: snapshotSource.diffText,
+      };
+    })
     .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
 
   return {

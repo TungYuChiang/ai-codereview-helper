@@ -1,29 +1,48 @@
-// comments.js -- comment UI (add/edit/delete per change point) and the
-// orphaned-comment area. Split out of app.js as a pure move (see state.js's
-// header comment).
+// comments.js -- comment + note UI (add/edit/delete per change point) and
+// the orphaned-annotation area. Split out of app.js as a pure move (see
+// state.js's header comment); notes were added later as a second,
+// independent per-change-point annotation living in the same module (see
+// EXTENSION POINT 4 below for why they share one DOM wrapper).
+//
+// Comment vs note, per the brief: a comment means "I'm unsure about this, I
+// need it checked" -- it is the whole reason the Claude-prompt export
+// exists, so it is the ONLY thing that export includes (see export.js). A
+// note means "I understood this, recording it for myself" -- it never
+// appears in the Claude prompt, but DOES appear in the Markdown export
+// (export.js again), which is the one meant for pasting into Obsidian. They
+// are otherwise symmetric: independent add/edit/delete, independent
+// persistence (state.js's comments/notes maps, same changePointKey), and a
+// change point can have both, either, or neither at once.
 
 import { appState, dom, createEl, mainPaneEl } from './state.js';
 import { api, clearError, showError } from './api.js';
 
 // ===========================================================================
-// EXTENSION POINT 4 continued -- comment UI, attached to every change point
-// via its container's data-key (set by pane.js's renderChangePointPane).
+// EXTENSION POINT 4 continued -- comment + note UI, attached to every change
+// point via its container's data-key (set by pane.js's renderChangePointPane).
 // Called once per file open (see pane.js's renderFilePane), after every one
 // of that file's change points exists, so it never has to guess at DOM
 // ordering.
 //
-// A comment section has two mutually exclusive render states:
-//   - view mode: existing comment text (or an "add comment" affordance)
-//   - edit mode: a textarea, Esc to cancel / Cmd|Ctrl+Enter to save
+// One shared outer wrapper (entry.commentEl, a.k.a. ".comment-section")
+// holds two independently-rendered children, entry.commentBodyEl and
+// entry.noteBodyEl. This is deliberately ONE wrapper, not two -- the common
+// case across a large review is a change point with neither a comment nor a
+// note, and two separate top-level sections would each show their own
+// "+ Comment" / "+ Note" affordance row, doubling the vertical footprint of
+// exactly the case that happens most often. With one wrapper and CSS
+// flex-wrap (see .comment-section in style.css), two small unexpanded "add"
+// buttons naturally sit side by side on a single line; whichever one grows
+// into real content (view or edit mode) claims the full row width via
+// .annotation-slot-expanded and pushes the other, still-small affordance
+// onto its own line below -- so the layout adapts to how many of the two
+// are actually in use without any JS coordination between them.
 //
-// Saving always goes through POST /api/comment and updates the in-memory
-// changePoint + DOM in place -- no refetch of the tree (see saveComment).
-// Comments themselves are global regardless of which file is displayed
-// (they live on changePoint.comment, part of the shared model, not on
-// anything file-view-scoped) -- only their DOM only exists for the change
-// points currently rendered, which this loop's `if (!entry.rightContainer)`
-// guard accounts for (single-file-view unit: most entries, at any given
-// moment, belong to a file that isn't the one open).
+// Each of comment and note has its own two mutually exclusive render states
+// (view mode / edit mode), and saving always goes through its own endpoint
+// (POST /api/comment or POST /api/note) and updates the in-memory
+// changePoint + DOM in place -- no refetch of the tree, same as before
+// notes existed.
 // ===========================================================================
 
 export function renderAllComments() {
@@ -32,33 +51,69 @@ export function renderAllComments() {
     if (!entry.commentEl) {
       const section = createEl('div', { className: 'comment-section' });
       // Programmatically focusable (tabIndex -1) but not a Tab stop: this is
-      // where focus lands after a save/cancel (see renderCommentView's
-      // focusTrigger below), instead of on the Edit/+Comment button. Landing
-      // on an activatable <button> there means a `space` press right after
-      // saving a comment -- exactly the rhythm the brief calls out ("save a
-      // comment, then press space to keep reading") -- activates the button
-      // and reopens the editor instead of scrolling. A non-interactive
-      // container has no activation behavior, so `space` falls through to
-      // the browser's native scroll. The Edit/+Comment button itself is
-      // untouched and still reachable by tabbing through the document in
-      // order.
+      // where focus lands after a save/cancel of EITHER the comment or the
+      // note editor (see renderCommentView/renderNoteView's focusTrigger
+      // below), instead of on whichever Edit/+Comment/+Note button triggered
+      // it. Landing on an activatable <button> there means a `space` press
+      // right after saving -- exactly the rhythm the brief calls out ("save
+      // a comment, then press space to keep reading") -- activates the
+      // button and reopens the editor instead of scrolling. A
+      // non-interactive container has no activation behavior, so `space`
+      // falls through to the browser's native scroll. The individual
+      // buttons themselves are untouched and still reachable by tabbing
+      // through the document in order.
       section.tabIndex = -1;
       entry.rightContainer.appendChild(section);
       entry.commentEl = section;
+
+      const commentBody = createEl('div', { className: 'annotation-slot annotation-slot-comment' });
+      const noteBody = createEl('div', { className: 'annotation-slot annotation-slot-note' });
+      section.append(commentBody, noteBody);
+      entry.commentBodyEl = commentBody;
+      entry.noteBodyEl = noteBody;
     }
     renderCommentView(entry);
+    renderNoteView(entry);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Only one editor -- comment or note, on any change point -- is ever open at
+// once, exactly like the pre-notes behavior where only one comment editor
+// could be open at a time. Opening a second editor discards the first one's
+// unsaved text, same as Esc always has. `nextKey`/`nextKind` identify the
+// editor about to open so that this is a no-op when it is called for the
+// editor that is already open (defensive -- in practice the view-mode
+// Edit/+Comment/+Note buttons that call enterCommentEdit/enterNoteEdit are
+// themselves gone once that editor is open, so re-entry only happens
+// through this function's own callers).
+// ---------------------------------------------------------------------------
+
+function closeOpenEditor(nextKey, nextKind) {
+  if (!appState.editingKey) return;
+  if (appState.editingKey === nextKey && appState.editingKind === nextKind) return;
+  const other = dom.changePoints.get(appState.editingKey);
+  if (!other) return;
+  if (appState.editingKind === 'comment') renderCommentView(other);
+  else if (appState.editingKind === 'note') renderNoteView(other);
+}
+
+// ===========================================================================
+// Comment -- unchanged behavior from before notes existed, just scoped to
+// entry.commentBodyEl (a child of the shared wrapper) instead of owning the
+// whole section.
+// ===========================================================================
 
 // View mode: shows the saved comment (via textContent only -- comment text
 // comes from the reviewed repo's own diff plus whatever the user typed, and
 // must never be interpreted as markup) plus Edit/Delete, or an "add
 // comment" button when there is none yet.
 function renderCommentView(entry, { focusTrigger = false } = {}) {
-  const { commentEl, changePoint } = entry;
-  commentEl.textContent = '';
+  const { commentBodyEl, changePoint } = entry;
+  commentBodyEl.textContent = '';
 
   if (changePoint.comment) {
+    commentBodyEl.classList.add('annotation-slot-expanded');
     const body = createEl('div', { className: 'comment-body' });
     body.appendChild(createEl('span', { className: 'comment-label', text: 'Comment' }));
     body.appendChild(createEl('p', { className: 'comment-text', text: changePoint.comment }));
@@ -73,37 +128,32 @@ function renderCommentView(entry, { focusTrigger = false } = {}) {
     actions.append(editBtn, deleteBtn);
     body.appendChild(actions);
 
-    commentEl.appendChild(body);
-    // Focus the section container, not editBtn -- see the tabIndex comment
-    // in renderAllComments for why (space-reopens-editor bug, finding 2).
-    if (focusTrigger) commentEl.focus();
+    commentBodyEl.appendChild(body);
+    // Focus the shared section container, not editBtn -- see the tabIndex
+    // comment in renderAllComments for why (space-reopens-editor bug).
+    if (focusTrigger) entry.commentEl.focus();
   } else {
+    commentBodyEl.classList.remove('annotation-slot-expanded');
     const addBtn = createEl('button', { className: 'comment-btn comment-add-btn', text: '+ Comment' });
     addBtn.type = 'button';
     addBtn.addEventListener('click', () => enterCommentEdit(entry));
-    commentEl.appendChild(addBtn);
-    // Focus the section container, not addBtn -- see the tabIndex comment
-    // in renderAllComments for why (space-reopens-editor bug, finding 2).
-    if (focusTrigger) commentEl.focus();
+    commentBodyEl.appendChild(addBtn);
+    if (focusTrigger) entry.commentEl.focus();
   }
 }
 
 // Edit mode. Sets appState.isEditing -- see EXTENSION POINT 5 in state.js's
 // appState declaration -- for the whole time the textarea exists.
 export function enterCommentEdit(entry) {
-  // Only one change point can be in edit mode at a time, so editingKey is
-  // always an accurate answer to "which one" -- opening a second editor
-  // auto-cancels the first (same as Esc: discards unsaved text).
-  if (appState.editingKey && appState.editingKey !== entry.changePoint.id) {
-    const other = dom.changePoints.get(appState.editingKey);
-    if (other) renderCommentView(other);
-  }
+  closeOpenEditor(entry.changePoint.id, 'comment');
 
   appState.isEditing = true;
   appState.editingKey = entry.changePoint.id;
+  appState.editingKind = 'comment';
 
-  const { commentEl, changePoint } = entry;
-  commentEl.textContent = '';
+  const { commentBodyEl, changePoint } = entry;
+  commentBodyEl.textContent = '';
+  commentBodyEl.classList.add('annotation-slot-expanded');
 
   const textarea = document.createElement('textarea');
   textarea.className = 'comment-textarea';
@@ -143,7 +193,7 @@ export function enterCommentEdit(entry) {
     stop(e);
   });
 
-  commentEl.append(textarea, hint, actions);
+  commentBodyEl.append(textarea, hint, actions);
   textarea.focus();
   textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 }
@@ -151,6 +201,7 @@ export function enterCommentEdit(entry) {
 function exitCommentEdit(entry) {
   appState.isEditing = false;
   appState.editingKey = null;
+  appState.editingKind = null;
   renderCommentView(entry, { focusTrigger: true });
 }
 
@@ -185,30 +236,178 @@ async function saveComment(entry, text) {
     if (!hadCommentBefore && hasCommentAfter) appState.tree.stats.comments += 1;
   }
 
-  // Only clear the shared editing flag if `entry` is the change point it
+  // Only clear the shared editing flag if `entry` + "comment" is what it
   // actually refers to. saveComment is also reached directly from the
   // view-mode Delete button (no editor open for that entry at all), so an
-  // unconditional reset here can clobber appState.isEditing/editingKey out
-  // from under an *unrelated* change point's still-open textarea -- at which
-  // point every single-key shortcut goes live while a comment editor is
+  // unconditional reset here can clobber appState.isEditing/editingKey/
+  // editingKind out from under an *unrelated* still-open editor -- either a
+  // comment editor on a different change point (the original, pre-notes
+  // bug this guard already fixed), or, now that a single change point can
+  // have both a comment and a note, a NOTE editor open on this very same
+  // change point (its view-mode comment Delete button sits right next to a
+  // note textarea that is mid-edit). The editingKind check is what tells
+  // those two apart -- without it, deleting a comment while this entry's
+  // note editor is open would silently end note-editing too, at which point
+  // every single-key shortcut goes live while the note textarea is still
   // visibly open and still holds the user's unsaved text. Mirrors the guard
   // enterCommentEdit already applies before stealing edit mode from another
-  // entry.
-  if (appState.editingKey === entry.changePoint.id) {
+  // entry/kind.
+  if (appState.editingKey === entry.changePoint.id && appState.editingKind === 'comment') {
     appState.isEditing = false;
     appState.editingKey = null;
+    appState.editingKind = null;
   }
   renderCommentView(entry, { focusTrigger: true });
 }
 
 // ===========================================================================
-// Orphan comments -- change points whose underlying diff no longer exists
-// (GET /api/diff's `orphans` array; see state.js buildAnnotated on the
-// backend). Never silently dropped: shown in their own section with the
-// filePath / functionName / diffText snapshot the comment was originally
-// attached to, entirely via textContent (that snapshot is reviewed-repo
-// content and must never be treated as markup). "Keep" needs no API call --
-// not touching an orphan *is* keeping it; only "discard" hits the network.
+// Note -- structurally a mirror of the comment code above (same view/edit
+// states, same save-in-place/no-refetch rule, same Esc/⌘+Enter/clear-to-
+// delete conventions), deliberately kept un-colored (see .note-label /
+// .note-add-btn in style.css): a note is "I already understood this", not
+// something that needs the reviewer's attention the way an open comment
+// does, so it does not compete for the amber "comment" hue -- or green
+// (diff additions) or terracotta (read state / progress / open file) -- at
+// all. Text-only differentiation ("Note" vs "Comment" labels, "+ Note" vs
+// "+ Comment" buttons) plus the neutral default button treatment already
+// used elsewhere in this file is enough to tell the two apart while
+// scanning a large review, without adding a fifth semantic color.
+// ===========================================================================
+
+function renderNoteView(entry, { focusTrigger = false } = {}) {
+  const { noteBodyEl, changePoint } = entry;
+  noteBodyEl.textContent = '';
+
+  if (changePoint.note) {
+    noteBodyEl.classList.add('annotation-slot-expanded');
+    const body = createEl('div', { className: 'note-body' });
+    body.appendChild(createEl('span', { className: 'note-label', text: 'Note' }));
+    body.appendChild(createEl('p', { className: 'note-text', text: changePoint.note }));
+
+    const actions = createEl('div', { className: 'comment-actions' });
+    const editBtn = createEl('button', { className: 'comment-btn', text: 'Edit' });
+    editBtn.type = 'button';
+    editBtn.addEventListener('click', () => enterNoteEdit(entry));
+    const deleteBtn = createEl('button', { className: 'comment-btn comment-btn-danger', text: 'Delete' });
+    deleteBtn.type = 'button';
+    deleteBtn.addEventListener('click', () => saveNote(entry, ''));
+    actions.append(editBtn, deleteBtn);
+    body.appendChild(actions);
+
+    noteBodyEl.appendChild(body);
+    if (focusTrigger) entry.commentEl.focus();
+  } else {
+    noteBodyEl.classList.remove('annotation-slot-expanded');
+    const addBtn = createEl('button', { className: 'comment-btn note-add-btn', text: '+ Note' });
+    addBtn.type = 'button';
+    addBtn.addEventListener('click', () => enterNoteEdit(entry));
+    noteBodyEl.appendChild(addBtn);
+    if (focusTrigger) entry.commentEl.focus();
+  }
+}
+
+export function enterNoteEdit(entry) {
+  closeOpenEditor(entry.changePoint.id, 'note');
+
+  appState.isEditing = true;
+  appState.editingKey = entry.changePoint.id;
+  appState.editingKind = 'note';
+
+  const { noteBodyEl, changePoint } = entry;
+  noteBodyEl.textContent = '';
+  noteBodyEl.classList.add('annotation-slot-expanded');
+
+  const textarea = document.createElement('textarea');
+  textarea.className = 'comment-textarea';
+  textarea.value = changePoint.note || '';
+  textarea.rows = 4;
+  textarea.setAttribute('aria-label', 'note text');
+
+  const hint = createEl('div', {
+    className: 'comment-hint',
+    text: 'Esc cancel  ·  ⌘/Ctrl+Enter save  ·  clear + save = delete',
+  });
+
+  const actions = createEl('div', { className: 'comment-actions' });
+  const saveBtn = createEl('button', { className: 'comment-btn comment-btn-primary', text: 'Save' });
+  saveBtn.type = 'button';
+  saveBtn.addEventListener('click', () => saveNote(entry, textarea.value));
+  const cancelBtn = createEl('button', { className: 'comment-btn', text: 'Cancel' });
+  cancelBtn.type = 'button';
+  cancelBtn.addEventListener('click', () => exitNoteEdit(entry));
+  actions.append(saveBtn, cancelBtn);
+
+  const stop = (e) => e.stopPropagation();
+  textarea.addEventListener('keyup', stop);
+  textarea.addEventListener('keypress', stop);
+  textarea.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      exitNoteEdit(entry);
+    } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      saveNote(entry, textarea.value);
+    }
+    stop(e);
+  });
+
+  noteBodyEl.append(textarea, hint, actions);
+  textarea.focus();
+  textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+}
+
+function exitNoteEdit(entry) {
+  appState.isEditing = false;
+  appState.editingKey = null;
+  appState.editingKind = null;
+  renderNoteView(entry, { focusTrigger: true });
+}
+
+// Saves via POST /api/note (server treats empty/whitespace-only text as
+// delete -- see state.js setNote on the backend), then updates
+// changePoint.note and re-renders just this one note section in place.
+// Never refetches GET /api/diff, same rule as saveComment above.
+async function saveNote(entry, text) {
+  clearError();
+  const { changePoint } = entry;
+  const context = {
+    filePath: changePoint.filePath,
+    functionName: changePoint.functionName,
+    diffText: changePoint.diffText,
+  };
+
+  try {
+    await api.setNote(appState.repo, changePoint.id, text, context);
+  } catch (err) {
+    showError(err.message);
+    return; // stay in edit mode -- the user's text is still in the textarea
+  }
+
+  const isEmpty = typeof text !== 'string' || text.trim() === '';
+  changePoint.note = isEmpty ? null : text;
+
+  // Same editingKind-guarded reset as saveComment, mirrored: this entry's
+  // comment editor could independently be open right now, and must not be
+  // clobbered by a note Delete/Save that doesn't refer to it.
+  if (appState.editingKey === entry.changePoint.id && appState.editingKind === 'note') {
+    appState.isEditing = false;
+    appState.editingKey = null;
+    appState.editingKind = null;
+  }
+  renderNoteView(entry, { focusTrigger: true });
+}
+
+// ===========================================================================
+// Orphan comments/notes -- change points whose underlying diff no longer
+// exists (GET /api/diff's `orphans` array; see state.js buildAnnotated on
+// the backend). Never silently dropped: shown in their own section with the
+// filePath / functionName / diffText snapshot the annotation(s) were
+// originally attached to, entirely via textContent (that snapshot is
+// reviewed-repo content and must never be treated as markup). "Keep" needs
+// no API call -- not touching an orphan *is* keeping it; only "discard" hits
+// the network, and discards BOTH the comment and the note for that key at
+// once (see state.js discardOrphan) since the card represents one
+// change-point identity, not one annotation type.
 // ===========================================================================
 
 let orphansRootEl = null;
@@ -268,7 +467,17 @@ function buildOrphanCard(orphan) {
   diffPre.textContent = orphan.diffText || '';
   card.appendChild(diffPre);
 
-  card.appendChild(createEl('p', { className: 'orphan-comment', text: orphan.text }));
+  // orphan.text/orphan.note are independently nullable (see state.js
+  // buildAnnotated) -- an orphan can carry a comment, a note, or both, so
+  // each gets its own labeled block only when present.
+  if (orphan.text) {
+    card.appendChild(createEl('span', { className: 'comment-label', text: 'Comment' }));
+    card.appendChild(createEl('p', { className: 'orphan-comment', text: orphan.text }));
+  }
+  if (orphan.note) {
+    card.appendChild(createEl('span', { className: 'note-label', text: 'Note' }));
+    card.appendChild(createEl('p', { className: 'orphan-comment orphan-note', text: orphan.note }));
+  }
 
   const actions = createEl('div', { className: 'orphan-actions' });
   const discardBtn = createEl('button', { className: 'comment-btn comment-btn-danger', text: 'Discard' });

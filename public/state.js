@@ -78,14 +78,23 @@ export const appState = {
   collapsed: new Set(), // collapsed tree node ids, e.g. "file:foo.js", "group:foo.js::g0"
 
   // EXTENSION POINT 5 -- "is editing" flag, for the keyboard-shortcut unit.
-  // isEditing is true whenever a comment textarea is open (add or edit).
-  // The keyboard-navigation unit's document-level keydown handler for
+  // isEditing is true whenever a comment OR a note textarea is open (add or
+  // edit -- see comments.js's enterCommentEdit/enterNoteEdit). The
+  // keyboard-navigation unit's document-level keydown handler for
   // j/k/x/u/c/f MUST check `appState.isEditing` first and bail out while
-  // it's true, or single-key shortcuts will fire while the user is typing
-  // a comment. editingKey names which change point is being edited (or
-  // null); isEditing is the boolean the next unit should actually check.
+  // it's true, or single-key shortcuts will fire while the user is typing.
+  // editingKey names which change point is being edited (or null);
+  // editingKind says which of that change point's two editors it is
+  // ('comment' | 'note' | null) -- needed because a single change point can
+  // have both a comment and a note, so "which key" alone is no longer
+  // enough to know which editor to close/re-render. At most one editor (of
+  // either kind, on any change point) is ever open at once: opening a
+  // second auto-cancels whichever one was open before, exactly like the
+  // pre-notes comment-only behavior. isEditing is the boolean the next unit
+  // should actually check.
   isEditing: false,
   editingKey: null,
+  editingKind: null,
 
   // Sidebar collapse -- whole #tree-pane, not any individual tree node (that
   // is appState.collapsed above). Restored from localStorage on init, see
@@ -115,7 +124,14 @@ export const appState = {
 // appState.currentKey, which is always kept pointing into the displayed
 // file -- see pane.js's openChangePoint/openFile) must null-check first.
 export const dom = {
-  changePoints: new Map(), // key -> { changePoint, group, file, groupKey, leftRow, leftCheckbox, rightContainer, rightCheckbox, contentEl, commentEl, expand }
+  changePoints: new Map(), // key -> { changePoint, group, file, groupKey, leftRow, leftCheckbox, rightContainer, rightCheckbox, contentEl, commentEl, commentBodyEl, noteBodyEl, expand }
+  // commentEl is the single shared outer wrapper for BOTH the comment and
+  // note UI on a change point (comments.js) -- commentBodyEl/noteBodyEl are
+  // its two independently-rendered children. Keeping one wrapper instead of
+  // two separate top-level sections is deliberate: with two, an unannotated
+  // change point (the common case across a large review) would show two
+  // stacked "+ Comment" / "+ Note" affordance rows instead of one, which is
+  // exactly the density regression the personal-notes brief warns against.
   groups: new Map(),       // groupKey -> { group, badgeEl, progressFillEl, toggleBtn, childUl }
   files: new Map(),        // path -> { file, badgeEl, progressFillEl, toggleBtn, childUl, headerEl }
   scrollObserver: null,    // current IntersectionObserver for scroll-spy, or null
