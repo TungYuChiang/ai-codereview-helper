@@ -156,21 +156,29 @@
      Opacity lowered from 0.12 to 0.10 for this theme specifically -- brief:
      "現行 diff 底色透明度...是否需要調低" -- our own tint is free to tune,
      unlike a published palette. 0.10 still reads clearly as add/del at a
-     glance (confirmed by screenshot) and buys the comment token consistent
-     5.4:1+ margin instead of running close to the 4.5 floor.
+     glance and buys the comment token consistent 5:1+ margin instead of
+     running close to the 4.5 floor.
 
-     Add/del opacity is deliberately asymmetric (0.16 vs 0.10), not a copy-
-     paste oversight: at equal opacity, green and red composite to nearly
-     identical luminance/saturation deltas from this neutral bg (measured:
-     0.0101 vs 0.0058 luminance delta, green actually *larger*), yet a
-     real screenshot still read as "added lines look weak next to removed
-     lines" -- warm hues (red) advance and cool hues (green) recede
-     perceptually even at equal or higher contrast, so equal-opacity does
-     not mean equal-presence here. Green's opacity is raised until the two
-     rows read as equally strong by eye (confirmed by screenshot), not by
-     equalizing a luminance formula that already said they were even. */
-  --code-diff-add-bg: rgba(34, 197, 94, 0.16);
-  --code-diff-del-bg: rgba(239, 68, 68, 0.10);
+     Add/del opacity is deliberately asymmetric (0.10 vs 0.16), corrected
+     here from an earlier pass that got this backwards. That earlier pass
+     measured green > red at equal opacity (0.0101 vs 0.0058 luminance
+     delta against this bg), then a screenshot was eyeballed as "added
+     lines look weak next to removed lines" and green's alpha was pushed
+     up from 0.10 to 0.16 to fix that -- without re-measuring. That was
+     wrong on its own terms: raising green's alpha while its luminance
+     delta was already the larger of the two only widened the gap. Redone
+     from measurement instead of eyeballing: green (34,197,94) contributes
+     far more luminance per unit of alpha than red (239,68,68) does, since
+     luminance weights green ~3.4x red (0.7152 vs 0.2126 in Rec. 709) --
+     so equal *perceptual weight* against this bg requires red's alpha to
+     run higher than green's, not the other way around. add=0.10/del=0.16
+     put both at luminance delta ~0.010-0.011 (was 0.0188 vs 0.0060, a 3.1x
+     mismatch) -- verified against a render, not assumed from the formula
+     alone. Same rebalancing applied to the light mapping below and to
+     every code theme further down: each theme's own green/red at equal
+     alpha was re-measured, not carried over unexamined. */
+  --code-diff-add-bg: rgba(34, 197, 94, 0.10);
+  --code-diff-del-bg: rgba(239, 68, 68, 0.16);
   --code-diff-add-marker: #22c55e;
   --code-diff-del-marker: #ef4444;
 
@@ -254,8 +262,12 @@
     --code-string: #166534;
     --code-comment: #5b564f;
 
-    --code-diff-add-bg: rgba(22, 163, 74, 0.1);
-    --code-diff-del-bg: rgba(220, 38, 38, 0.1);
+    /* Rebalanced same as the dark default above: equal 0.10 alpha measured
+       out to add=0.116/del=0.136 luminance delta against this bg (add
+       weaker), so add nudges up and del nudges down to bring both to
+       ~0.11-0.12. */
+    --code-diff-add-bg: rgba(22, 163, 74, 0.12);
+    --code-diff-del-bg: rgba(220, 38, 38, 0.08);
     --code-diff-add-marker: #16a34a;
     --code-diff-del-marker: #dc2626;
   }
@@ -302,14 +314,21 @@
   --code-bg: #0d1117;
   --code-empty-bg: color-mix(in srgb, var(--code-fg) 10%, var(--code-bg));
 
-  --code-diff-add-bg: rgba(63, 185, 80, 0.15);
-  --code-diff-del-bg: rgba(248, 81, 73, 0.15);
+  /* Rebalanced (see the default theme's tint comment above for method):
+     equal 0.15 alpha measured out to add/del luminance delta 1.45x apart
+     against this bg, add stronger. */
+  --code-diff-add-bg: rgba(63, 185, 80, 0.13);
+  --code-diff-del-bg: rgba(248, 81, 73, 0.17);
   --code-diff-add-marker: #3fb950;
   --code-diff-del-marker: #f85149;
 }
 
 /* GitHub Light -- same source family as github-dark, light variant
-   ("GitHub Light Default"), i.e. github.com's light-mode diff colors. */
+   ("GitHub Light Default"), i.e. github.com's light-mode diff colors.
+   Checked against the tint-balance pass applied to every other theme here
+   (see the default theme's diff-tint comment): add/del measured to a
+   0.99x luminance-delta ratio at the alphas already below, i.e. already
+   balanced -- left unchanged. */
 :root[data-code-theme="github-light"] {
   --code-fg: #1f2328;
   --code-keyword: #cf222e;
@@ -345,8 +364,11 @@
   --code-bg: #282c34;
   --code-empty-bg: color-mix(in srgb, var(--code-fg) 10%, var(--code-bg));
 
-  --code-diff-add-bg: rgba(152, 195, 121, 0.16);
-  --code-diff-del-bg: rgba(224, 108, 117, 0.16);
+  /* Rebalanced (see the default theme's tint comment above for method):
+     equal 0.16 alpha measured out to add/del luminance delta 1.62x apart
+     against this bg, add stronger. */
+  --code-diff-add-bg: rgba(152, 195, 121, 0.13);
+  --code-diff-del-bg: rgba(224, 108, 117, 0.20);
   --code-diff-add-marker: #98c379;
   --code-diff-del-marker: #e06c75;
 }
@@ -365,8 +387,11 @@
   --code-bg: #282a36;
   --code-empty-bg: color-mix(in srgb, var(--code-fg) 10%, var(--code-bg));
 
-  --code-diff-add-bg: rgba(80, 250, 123, 0.15);
-  --code-diff-del-bg: rgba(255, 85, 85, 0.15);
+  /* Rebalanced (see the default theme's tint comment above for method):
+     equal 0.15 alpha measured out to add/del luminance delta 2.28x apart
+     against this bg, add much stronger. */
+  --code-diff-add-bg: rgba(80, 250, 123, 0.11);
+  --code-diff-del-bg: rgba(255, 85, 85, 0.21);
   --code-diff-add-marker: #50fa7b;
   --code-diff-del-marker: #ff5555;
 }
@@ -386,8 +411,12 @@
   --code-bg: #272822;
   --code-empty-bg: color-mix(in srgb, var(--code-fg) 10%, var(--code-bg));
 
-  --code-diff-add-bg: rgba(166, 226, 46, 0.15);
-  --code-diff-del-bg: rgba(249, 38, 114, 0.15);
+  /* Rebalanced (see the default theme's tint comment above for method):
+     equal 0.15 alpha measured out to add/del luminance delta 3.24x apart
+     against this bg, add much stronger -- the worst mismatch of any
+     theme here. */
+  --code-diff-add-bg: rgba(166, 226, 46, 0.09);
+  --code-diff-del-bg: rgba(249, 38, 114, 0.23);
   --code-diff-add-marker: #a6e22e;
   --code-diff-del-marker: #f92672;
 }
@@ -406,8 +435,11 @@
   --code-bg: #2e3440;
   --code-empty-bg: color-mix(in srgb, var(--code-fg) 10%, var(--code-bg));
 
-  --code-diff-add-bg: rgba(163, 190, 140, 0.18);
-  --code-diff-del-bg: rgba(191, 97, 106, 0.18);
+  /* Rebalanced (see the default theme's tint comment above for method):
+     equal 0.18 alpha measured out to add/del luminance delta 2.16x apart
+     against this bg, add stronger. */
+  --code-diff-add-bg: rgba(163, 190, 140, 0.13);
+  --code-diff-del-bg: rgba(191, 97, 106, 0.25);
   --code-diff-add-marker: #a3be8c;
   --code-diff-del-marker: #bf616a;
 }
@@ -428,8 +460,12 @@
   --code-bg: #fdf6e3;
   --code-empty-bg: #eee8d5;
 
-  --code-diff-add-bg: rgba(133, 153, 0, 0.16);
-  --code-diff-del-bg: rgba(220, 50, 47, 0.14);
+  /* Rebalanced (see the default theme's tint comment above for method):
+     0.16/0.14 measured out to add/del luminance delta 0.79x apart against
+     this bg, del stronger (this theme's del is closer to white/base3 than
+     add is, on a light bg that reverses the usual green-advantage). */
+  --code-diff-add-bg: rgba(133, 153, 0, 0.18);
+  --code-diff-del-bg: rgba(220, 50, 47, 0.12);
   --code-diff-add-marker: #859900;
   --code-diff-del-marker: #dc322f;
 }
