@@ -1762,11 +1762,92 @@ input[type="checkbox"]:checked::after {
   width: 100%;
 }
 
+/* ====================================================================== */
+/* BEGIN annotation collapse -- saved comment/note collapsed to one row.   */
+/* Self-contained block: .annotation-header / -chevron / -summary /        */
+/* -more / -detail / .annotation-collapsed are used nowhere else. See      */
+/* buildAnnotationBody in comments.js. NOTE: distinct from the older       */
+/* .annotation-slot-expanded above, which is about flex row width, not     */
+/* about this open/closed state.                                           */
+/*                                                                         */
+/* The header is a real <button> reset back to looking like a text row --  */
+/* it must be Tab-reachable and Enter/Space-activatable, which a styled    */
+/* div would not be. The global :focus-visible ring is untouched.          */
+/* ====================================================================== */
+
+.annotation-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  text-align: left;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.annotation-header:hover {
+  border: none;
+  color: inherit;
+}
+
+.annotation-chevron {
+  flex: 0 0 auto;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--color-fg-faint);
+  transition: color var(--transition-fast);
+}
+
+.annotation-header:hover .annotation-chevron {
+  color: var(--color-fg-muted);
+}
+
+/* The collapsed stand-in for the body: one line, ellipsised at whatever
+ * width the pane currently is rather than at a hard-coded character count. */
+.annotation-summary {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--color-fg-muted);
+}
+
+.annotation-summary[hidden],
+.annotation-more[hidden],
+.annotation-detail[hidden] {
+  display: none;
+}
+
+.annotation-more {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--color-fg-faint);
+}
+
+.annotation-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* END annotation collapse                                                 */
+/* ====================================================================== */
+
 /* ---------------------------------------------------------------------- */
-/* Orphan comments -- change points whose code no longer exists in the     */
+/* History comments -- change points whose code no longer exists in the    */
 /* current diff. Kept clearly separate from the main review flow, always   */
 /* shown with their filePath/functionName/diffText snapshot, hidden        */
-/* entirely (not just emptied) when there are none.                        */
+/* entirely (not just emptied) when there are none. The class names still  */
+/* say "orphan" because that is the backend's field name -- see the        */
+/* naming note in comments.js's history section.                           */
 /* ---------------------------------------------------------------------- */
 
 .orphans-section {
@@ -1819,15 +1900,25 @@ input[type="checkbox"]:checked::after {
   color: var(--color-fg-dim);
 }
 
+/* The code snapshot on a history card. This rule is only a frame:
+ * everything inside it is a real .diff-unified built by diff.js's
+ * buildUnifiedDiff (see comments.js's buildSnapshotDiff), so the rows, the
+ * low-opacity add/del washes, the gutter widths, the Prism token colors and
+ * the active code theme all come from the diff rules above, unchanged --
+ * deliberately no font-size, font-family, background or color of our own
+ * here, since "reads exactly like the diff above" is the entire point of
+ * rendering it this way, and any of those set locally would be the first
+ * thing to drift.
+ *
+ * overflow-x: auto rather than the old white-space: pre-wrap -- .diff-code
+ * is white-space: pre (again, same as the live diff), so a long snapshot
+ * line scrolls this block horizontally instead of reflowing and breaking
+ * the row alignment the gutter/marker columns depend on. It also clips the
+ * rows' backgrounds to the border radius. */
 .orphan-diff {
   margin: 0 0 6px 0;
-  padding: 6px 8px;
+  border: 1px solid var(--color-border);
   border-radius: 4px;
-  background: var(--color-track);
-  color: var(--code-fg);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  white-space: pre-wrap;
   overflow-x: auto;
 }
 
@@ -2029,3 +2120,100 @@ input[type="checkbox"]:checked::after {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
+
+/* ======================================================================== */
+/* BEGIN ui-sbs-splitter -- draggable divider between the side-by-side      */
+/* columns. Self-contained block; nothing outside it was edited.            */
+/*                                                                          */
+/* The ratio is ONE value shared by every side-by-side block on the page    */
+/* (--sbs-ratio, written by diff.js onto #main-pane -- see applySbsRatio   */
+/* there for why that element and not <html>). Dragging any divider        */
+/* rewrites that single property and every change point's columns resize    */
+/* together -- a file with forty change points does not need forty drags,   */
+/* and a pointermove costs one property write rather than work that scales  */
+/* with the change-point count. See EXTENSION POINT 3 in diff.js.           */
+/*                                                                          */
+/* Only widths change here. The columns' own overflow-x (and therefore the  */
+/* synchronised horizontal scrolling between them) is deliberately          */
+/* untouched, as is the expand-control chrome, which lives in .diff-body    */
+/* as a sibling of .diff-sidebyside and still spans both columns.           */
+/* ======================================================================== */
+
+:root {
+  /* Fallback only -- diff.js sets --sbs-ratio inline on #main-pane at
+   * module load, before the first diff renders, so a saved ratio never
+   * flashes through 50/50 first. */
+  --sbs-ratio: 0.5;
+  /* Wide enough to grab comfortably with a mouse, narrow enough to still
+   * read as a divider line rather than a third column. diff.js measures
+   * this off the element (offsetWidth) rather than duplicating the number,
+   * so the two can't drift. */
+  --sbs-splitter-width: 7px;
+}
+
+/* Left column takes its share of everything the splitter does not occupy;
+ * the right column takes the rest. flex-basis 0 + grow on the right (rather
+ * than a second calc) keeps the two halves summing to exactly 100% at any
+ * ratio without sub-pixel rounding opening a seam. Both keep the
+ * `min-width: 0` from .diff-side above, which is what stops one long line
+ * from forcing its column past its share. */
+.diff-side-left {
+  flex: 0 0 calc((100% - var(--sbs-splitter-width)) * var(--sbs-ratio));
+  /* The divider is now drawn by .diff-splitter, which sits between the two
+   * columns -- keeping this border as well would double the hairline. */
+  border-right: none;
+}
+
+.diff-side-right {
+  flex: 1 1 0;
+}
+
+/* Styled from the --code-* theme tokens, not the shell tokens, for the same
+ * reason .diff-expand-row is: this sits inside the code area and has to
+ * read correctly under all nine code themes. --code-empty-bg is already the
+ * "this is not a code line" surface (side-by-side filler rows, expand
+ * bars). */
+.diff-splitter {
+  flex: 0 0 var(--sbs-splitter-width);
+  align-self: stretch;
+  background: var(--code-empty-bg);
+  border-left: 1px solid var(--color-border);
+  border-right: 1px solid var(--color-border);
+  cursor: col-resize;
+  /* The drag is driven by pointer events; without this a touch/pen drag
+   * would be swallowed by the scroll container instead. */
+  touch-action: none;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.diff-splitter:hover {
+  background: var(--color-accent-wash);
+  border-left-color: var(--color-accent);
+  border-right-color: var(--color-accent);
+}
+
+/* Visible active state while dragging -- and it stays on even when the
+ * pointer travels far from the divider, because pointer capture keeps the
+ * gesture attached to this element. */
+.diff-splitter.dragging {
+  background: var(--color-accent-wash-strong);
+  border-left-color: var(--color-accent);
+  border-right-color: var(--color-accent);
+}
+
+/* The global :focus-visible ring applies unchanged (never removed, never
+ * outline: none); this only lifts the strip out of the code background so
+ * the ring has something to sit around. */
+.diff-splitter:focus-visible {
+  background: var(--color-accent-wash);
+}
+
+/* While a drag is in flight the resize cursor and the suppressed selection
+ * have to hold across the whole document, not just over the 7px strip --
+ * the pointer is captured and routinely ends up over code on either side. */
+body.sbs-dragging {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* END ui-sbs-splitter                                                      */

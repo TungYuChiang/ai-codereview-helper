@@ -7,7 +7,7 @@
 import { appState, repoSelectEl, baseSelectEl, targetSelectEl, addRepoFormEl,
   addRepoInputEl, addRepoErrorEl, treeRootEl, changepointsRootEl, filePaneHeaderEl } from './state.js';
 import { api, clearError, showError } from './api.js';
-import { saveSelection } from './prefs.js';
+import { saveSelection, annotationStateId, pruneAnnotationExpanded } from './prefs.js';
 import { populateRepoSelect, updateRepoSelectTitle, dedupeRepos, populateBaseTargetSelects,
   pickDefaultBase, updateRefSelectTitles, updateWorkingTreeHint } from './topbar.js';
 import { renderTree } from './tree.js';
@@ -78,7 +78,32 @@ export async function loadDiff() {
 
   appState.tree = data;
   appState.currentKey = null;
+  pruneAnnotationExpanded(collectAnnotationIds(data));
   renderTree();
+}
+
+// Every annotation id this repo can still show a collapse toggle for: the
+// change points currently in the diff that actually carry a comment/note,
+// plus the orphans (which are, by construction, exactly the stored
+// annotations whose change point is NOT in this diff -- see buildAnnotated
+// in the backend state.js). The union therefore covers the repo's whole
+// comments/notes map, so pruning against it never discards state for an
+// annotation the user can still reach by switching base/target back.
+function collectAnnotationIds(tree) {
+  const ids = new Set();
+  for (const file of tree.files || []) {
+    for (const group of file.groups || []) {
+      for (const changePoint of group.changePoints || []) {
+        if (changePoint.comment) ids.add(annotationStateId('comment', changePoint.id));
+        if (changePoint.note) ids.add(annotationStateId('note', changePoint.id));
+      }
+    }
+  }
+  for (const orphan of tree.orphans || []) {
+    if (orphan.text) ids.add(annotationStateId('comment', orphan.key));
+    if (orphan.note) ids.add(annotationStateId('note', orphan.key));
+  }
+  return ids;
 }
 
 // ===========================================================================

@@ -14,7 +14,7 @@
 // instead: one coherent responsibility ("how a change point's body renders,
 // including pulling in more of the file around it"), no cycle.
 
-import { appState, createEl } from './state.js';
+import { appState, createEl, mainPaneEl } from './state.js';
 import { api } from './api.js';
 
 // ===========================================================================
@@ -65,7 +65,11 @@ const EXT_TO_PRISM_LANG = {
 // Resolves a Prism language name for a file path, or null if the extension
 // is unknown or the vendored Prism bundle doesn't have that grammar loaded.
 // Callers must treat null as "render as plain text" -- never throw.
-function getPrismLanguage(filePath) {
+//
+// Exported for comments.js's history-annotation snapshots, which render the
+// stored diffText through the same buildUnifiedDiff() below rather than as
+// flat text -- see the note on buildUnifiedDiff.
+export function getPrismLanguage(filePath) {
   const match = /\.([^./]+)$/.exec(filePath || '');
   const ext = match ? match[1].toLowerCase() : '';
   const lang = EXT_TO_PRISM_LANG[ext];
@@ -181,7 +185,15 @@ export function renderChangePointContent(entry) {
 // of the combined [...gap-above lines, ...diff lines, ...gap-below lines]
 // render and returns the element instead of appending it directly, so the
 // caller can place gap control rows between segments.
-function buildUnifiedDiff(lines, lang) {
+//
+// Exported (with getPrismLanguage above) so comments.js can render a history
+// annotation's stored diffText snapshot with the same rows, tints and Prism
+// highlighting as the live diff instead of keeping a second, drifting copy
+// of this. It only needs `line` objects shaped like git.js's -- {type,
+// oldLine, newLine, text} -- and buildUnifiedRow already renders a null
+// oldLine/newLine as an empty gutter cell, which is exactly what a snapshot
+// (deliberately stored without line numbers, see state.js) must show.
+export function buildUnifiedDiff(lines, lang) {
   const container = createEl('div', { className: 'diff-unified' });
   for (const line of lines) {
     container.appendChild(buildUnifiedRow(line, lang));
@@ -284,7 +296,12 @@ function buildSideBySideDiff(lines, lang) {
     rightCol.appendChild(buildSideBySideRow(right, lang, 'new'));
   }
 
-  container.append(leftCol, rightCol);
+  // The divider between the two columns is the drag handle -- see the
+  // splitter block below. It is a real flex item between the columns (not
+  // an overlay) so each column's own width, and therefore its own
+  // horizontal overflow, stays exactly what CSS says it is: nothing about
+  // scrolling changes, only how the available width is divided.
+  container.append(leftCol, buildSplitter(), rightCol);
   return container;
 }
 
@@ -308,6 +325,284 @@ function buildSideBySideRow(line, lang, side) {
   row.appendChild(code);
   return row;
 }
+
+// ===========================================================================
+// EXTENSION POINT 3 -- the side-by-side column splitter (ui-sbs-splitter
+// unit). VS Code's diff editor lets you drag the divider to widen whichever
+// side you are reading; the complaint that prompted this was a long CJK
+// comment cut off mid-sentence in the new-version column.
+//
+// -- One ratio, globally ----------------------------------------------------
+// The ratio is NOT per change point. A file with forty change points would
+// otherwise need forty drags to read one over-long line, which is a chore,
+// not a feature. So the ratio lives in exactly one place -- the
+// `--sbs-ratio` custom property on #main-pane -- and every .diff-sidebyside
+// block's columns are sized from it in CSS (see the matching block in
+// style.css). One drag therefore moves every change point at once for free:
+// a pointermove writes ONE property on ONE element and the style engine
+// does the rest. Nothing here walks the DOM per change point during a drag,
+// deliberately -- per-element work on every pointermove is exactly the cost
+// that scales with change-point count and turns a 40-hunk file into a
+// stutter (and this app already has one unexplained freeze report from a
+// large real-world repo; see diag.js).
+//
+// The one thing that genuinely is per-element -- each splitter's
+// aria-valuenow -- is therefore NOT updated on every move. During a drag
+// only the splitter actually being dragged (the one assistive tech is
+// following) is updated, O(1); the rest are resynced once at commit time
+// (pointerup / keyup / reset), a single bounded pass that never runs inside
+// the move loop.
+//
+// -- Why a splitter per block rather than one global control ---------------
+// A .diff-sidebyside block is built per render segment (gap context and
+// diff lines are separate blocks, see buildSegments), and each one already
+// draws its own divider between the columns. Making that divider itself
+// draggable is the affordance the screenshot shows and users expect -- you
+// grab the line you can see. They all drive the same single value, so which
+// one you grab does not matter. All interaction is bound with ONE delegated
+// listener per event type on `document`, never listeners per splitter: the
+// splitter count follows the change-point count, and so would the listener
+// count.
+//
+// -- Scrolling is untouched -------------------------------------------------
+// The two columns' horizontal scrolling stays synchronised exactly as it
+// was: this unit adds no scroll listener, reads no scrollLeft, and changes
+// no overflow property. It only changes how wide each column is.
+//
+// -- Mode switching ---------------------------------------------------------
+// Splitters exist only inside buildSideBySideDiff's output, so unified mode
+// never builds one -- there is nothing to tear down and nothing that can be
+// stranded. The ratio itself lives on #main-pane and in localStorage, both
+// untouched by a mode switch, so switching to unified and back restores the
+// same split. A drag cannot survive a mode switch either: the only ways to
+// switch are the top bar and `1`/`2`, neither reachable while the pointer
+// is captured by a splitter.
+// ===========================================================================
+
+export const SBS_RATIO_KEY = 'lcr.sbsRatio';
+export const SBS_RATIO_DEFAULT = 0.5;
+
+// Clamp -- neither side can be dragged to nothing. 20% of a typical main
+// pane is still ~8-10 monospace columns: narrow enough to work as "get out
+// of my way", wide enough that the shrunken side stays a recognisable strip
+// of code with its gutter, and wide enough that the splitter never ends up
+// flush against the pane edge where it would be awkward to grab back.
+export const SBS_RATIO_MIN = 0.2;
+export const SBS_RATIO_MAX = 0.8;
+
+// Arrow key = 2 percentage points. On a ~1100px content area that is ~22px,
+// about three JetBrains Mono 12px characters -- the smallest step that
+// reads as an intentional change (1 point is roughly one character and
+// feels like nothing happened), while 50% -> 80% takes 15 presses instead
+// of 30. Shift raises it to 10 points for coarse moves, Home/End jump
+// straight to the clamp bounds, and Enter resets to 50/50 (the keyboard
+// twin of the double-click reset). Space is deliberately not handled -- see
+// keyboard.js's note on never intercepting it.
+const SBS_KEY_STEP = 0.02;
+const SBS_KEY_STEP_COARSE = 0.1;
+
+let sbsRatio = SBS_RATIO_DEFAULT;
+
+function clampSbsRatio(ratio) {
+  if (!Number.isFinite(ratio)) return SBS_RATIO_DEFAULT;
+  return Math.min(SBS_RATIO_MAX, Math.max(SBS_RATIO_MIN, ratio));
+}
+
+function sbsAriaValue(ratio) {
+  return String(Math.round(ratio * 100));
+}
+
+// The whole of "apply the new ratio": one property write on one element.
+// Everything that renders from it (every column of every change point)
+// follows from that single write.
+//
+// It goes on #main-pane rather than <html> on purpose. A custom property is
+// inherited, so changing it forces a style recalc on every descendant of
+// whatever element it is set on -- and on a real diff the sidebar tree is
+// by far the biggest descendant count (833 nodes on the file used to
+// measure this, against 42 change points). #main-pane is the narrowest
+// element that still contains everything that could ever read the ratio
+// (#changepoints-root plus the orphan/history appendix appended beside it,
+// see ensureOrphansRootEl in comments.js), so scoping it here cuts the
+// whole tree pane out of the invalidation for free. Measured on a
+// 42-change-point file: ~31ms mean / 62ms worst per drag step on <html>,
+// ~26ms mean / 33ms worst here -- same mechanism, half the tail. The
+// :root fallback in style.css keeps the columns sane if this ever runs
+// before #main-pane exists.
+function applySbsRatio(ratio) {
+  sbsRatio = ratio;
+  mainPaneEl.style.setProperty('--sbs-ratio', String(ratio));
+}
+
+// Called when a gesture ENDS, not while it runs: persist, and bring every
+// other splitter's aria-valuenow back in line with the value they are all
+// already rendering at.
+function commitSbsRatio() {
+  try {
+    localStorage.setItem(SBS_RATIO_KEY, String(sbsRatio));
+  } catch {
+    // storage unavailable -- the ratio still works for this session
+  }
+  const value = sbsAriaValue(sbsRatio);
+  for (const el of document.querySelectorAll('.diff-splitter')) {
+    el.setAttribute('aria-valuenow', value);
+  }
+}
+
+// Restored at module load (before any diff renders) rather than from an
+// init() call, so the first side-by-side paint is already at the saved
+// ratio -- no 50/50 flash. A malformed or out-of-range stored value falls
+// back to the default rather than throwing or wedging a column shut.
+function restoreSbsRatio() {
+  let stored = null;
+  try {
+    stored = localStorage.getItem(SBS_RATIO_KEY);
+  } catch {
+    stored = null;
+  }
+  const parsed = stored == null ? NaN : Number.parseFloat(stored);
+  applySbsRatio(Number.isFinite(parsed) ? clampSbsRatio(parsed) : SBS_RATIO_DEFAULT);
+}
+restoreSbsRatio();
+
+function buildSplitter() {
+  const el = createEl('div', { className: 'diff-splitter' });
+  // role="separator" plus a tab stop is the standard focusable window
+  // splitter: assistive tech announces an adjustable separator with a
+  // value. aria-orientation is "vertical" because the separator itself is
+  // vertical (it divides left from right), per the ARIA window-splitter
+  // pattern -- not because the movement is horizontal.
+  el.setAttribute('role', 'separator');
+  el.setAttribute('aria-orientation', 'vertical');
+  el.setAttribute('aria-label', '左右欄寬');
+  el.setAttribute('aria-valuemin', sbsAriaValue(SBS_RATIO_MIN));
+  el.setAttribute('aria-valuemax', sbsAriaValue(SBS_RATIO_MAX));
+  el.setAttribute('aria-valuenow', sbsAriaValue(sbsRatio));
+  el.tabIndex = 0;
+  el.title = '拖曳調整左右欄寬；雙擊還原 50/50（方向鍵微調，Shift 加大）';
+  return el;
+}
+
+// Drag state. `originX` and `usableWidth` are measured ONCE at pointerdown
+// and reused for the whole gesture: the container's own width does not
+// change while dragging (only how its children divide it), so re-reading
+// getBoundingClientRect() on every move would be a forced synchronous
+// layout for a number that cannot have changed -- the same precaution
+// nav.js takes in its scroll path.
+let sbsDrag = null;
+
+function splitterFromEvent(e) {
+  const target = e.target;
+  if (!target || typeof target.closest !== 'function') return null;
+  return target.closest('.diff-splitter');
+}
+
+document.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  const el = splitterFromEvent(e);
+  if (!el) return;
+
+  const container = el.parentElement;
+  if (!container) return;
+  const rect = container.getBoundingClientRect();
+  const splitterWidth = el.offsetWidth;
+  const usableWidth = rect.width - splitterWidth;
+  if (usableWidth <= 0) return;
+
+  // The splitter's own width sits between the columns, so the ratio the
+  // pointer expresses is measured against the splitter's CENTRE: the left
+  // column is usableWidth * ratio wide, putting the centre at
+  // usableWidth * ratio + splitterWidth / 2 from the container's left edge.
+  sbsDrag = { el, originX: rect.left + splitterWidth / 2, usableWidth };
+  el.classList.add('dragging');
+  document.body.classList.add('sbs-dragging');
+  // Capture keeps the gesture attached to this splitter once the pointer
+  // leaves the 7px strip, which it does immediately. It can legitimately
+  // fail (setPointerCapture throws NotFoundError if the browser no longer
+  // tracks this pointer id), and an uncaught throw here would abort the
+  // handler *after* sbsDrag was set -- leaving a drag running with no
+  // .dragging class and no way to see it. The document-level
+  // pointermove/pointerup listeners below work with or without capture, so
+  // losing it costs nothing except the drag ending early if the pointer
+  // leaves the window.
+  try {
+    el.setPointerCapture(e.pointerId);
+  } catch {
+    // no capture -- see above
+  }
+  // Keep the drag from turning into a text selection of the code either
+  // side of it.
+  e.preventDefault();
+});
+
+document.addEventListener('pointermove', (e) => {
+  if (!sbsDrag) return;
+  const ratio = clampSbsRatio((e.clientX - sbsDrag.originX) / sbsDrag.usableWidth);
+  applySbsRatio(ratio);
+  // Only the dragged splitter -- see the block comment above for why the
+  // other N-1 wait for commit.
+  sbsDrag.el.setAttribute('aria-valuenow', sbsAriaValue(ratio));
+});
+
+function endSbsDrag() {
+  if (!sbsDrag) return;
+  sbsDrag.el.classList.remove('dragging');
+  document.body.classList.remove('sbs-dragging');
+  sbsDrag = null;
+  commitSbsRatio();
+}
+
+document.addEventListener('pointerup', endSbsDrag);
+document.addEventListener('pointercancel', endSbsDrag);
+
+// Double-click resets to 50/50 -- the standard splitter affordance, and the
+// cheapest way out of a drag that landed somewhere unhelpful.
+document.addEventListener('dblclick', (e) => {
+  if (!splitterFromEvent(e)) return;
+  e.preventDefault();
+  applySbsRatio(SBS_RATIO_DEFAULT);
+  commitSbsRatio();
+});
+
+document.addEventListener('keydown', (e) => {
+  const el = splitterFromEvent(e);
+  if (!el) return;
+
+  const step = e.shiftKey ? SBS_KEY_STEP_COARSE : SBS_KEY_STEP;
+  let next;
+  switch (e.key) {
+    case 'ArrowLeft':
+      next = sbsRatio - step;
+      break;
+    case 'ArrowRight':
+      next = sbsRatio + step;
+      break;
+    case 'Home':
+      next = SBS_RATIO_MIN;
+      break;
+    case 'End':
+      next = SBS_RATIO_MAX;
+      break;
+    case 'Enter':
+      next = SBS_RATIO_DEFAULT;
+      break;
+    default:
+      return; // every other key, j/k/x/... included, still reaches keyboard.js
+  }
+
+  e.preventDefault();
+  const ratio = clampSbsRatio(next);
+  applySbsRatio(ratio);
+  el.setAttribute('aria-valuenow', sbsAriaValue(ratio));
+});
+
+// Auto-repeat fires many keydowns and exactly one keyup, so committing here
+// keeps the localStorage write and the full aria resync out of the repeat
+// loop, for the same reason pointerup does for a drag.
+document.addEventListener('keyup', (e) => {
+  if (!splitterFromEvent(e)) return;
+  commitSbsRatio();
+});
 
 // ===========================================================================
 // Expand context above/below a change point -- GET /api/lines, GitHub/GitLab-

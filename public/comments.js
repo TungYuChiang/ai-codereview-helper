@@ -16,6 +16,8 @@
 
 import { appState, dom, createEl, mainPaneEl } from './state.js';
 import { api, clearError, showError } from './api.js';
+import { buildUnifiedDiff, getPrismLanguage } from './diff.js';
+import { isAnnotationExpanded, setAnnotationExpanded, forgetAnnotationExpanded } from './prefs.js';
 
 // ===========================================================================
 // EXTENSION POINT 4 continued -- comment + note UI, attached to every change
@@ -99,6 +101,111 @@ function closeOpenEditor(nextKey, nextKind) {
 }
 
 // ===========================================================================
+// Collapsing a saved annotation -- shared by comment and note, which are the
+// same kind of block and must not behave differently.
+//
+// Why: once written, a comment's day-to-day value is "I marked this place",
+// not "show me the full text at all times". Real comments here run to many
+// lines (the motivating one pasted several lines of source plus a question)
+// and a handful of them crowd everything else off the screen. So a saved
+// annotation renders as one header row by default, and the body is one click
+// or one Enter away.
+//
+// The summary line is the first NON-EMPTY line, trimmed, plus a "+N lines"
+// count when there are more. Deliberately not "the first N characters" (it
+// cuts mid-word and mid-token) and deliberately not any attempt to find "the
+// user's own words" as opposed to a pasted code line they opened with: that
+// would be a guess, it would be wrong exactly on the long comments that need
+// it most, and it would make the collapsed line show something that isn't at
+// the top of the text when you expand it. First line + line count is honest:
+// it is literally what you see first when it opens, and the count tells you
+// how much more there is. Truncation of an over-wide first line is CSS
+// ellipsis (see .annotation-summary), so it adapts to the pane width instead
+// of a hard-coded character budget.
+//
+// The toggle is a real <button> -- Tab reaches it, Enter/Space activate it,
+// and aria-expanded/aria-controls carry the state -- not a clickable div.
+//
+// Toggling never re-renders the slot: it flips hidden/aria/text on nodes
+// that already exist. That keeps focus on the button the user just pressed
+// (a re-render would destroy it and drop focus to <body>), and it means
+// collapsing cannot touch appState.isEditing or the *other* annotation's
+// open editor on the same change point, since it never runs any of the
+// render/save paths that own that flag.
+// ===========================================================================
+
+let annotationDetailSeq = 0;
+
+// First non-empty line + how many lines follow it. Trailing blank lines are
+// dropped first so a comment ending in a newline doesn't claim "+1 lines".
+function summarizeAnnotation(text) {
+  const lines = String(text ?? '').split('\n');
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+  let i = 0;
+  while (i < lines.length && lines[i].trim() === '') i += 1;
+  return {
+    first: i < lines.length ? lines[i].trim() : '',
+    extra: Math.max(0, lines.length - i - 1),
+  };
+}
+
+// Builds the whole view-mode body for one saved annotation: collapsible
+// header + hidden detail (text + Edit/Delete). `kind` is 'comment' | 'note'
+// and is what scopes the persisted state, so a change point's comment and
+// note collapse independently.
+function buildAnnotationBody({ kind, key, bodyClassName, labelClassName, labelText, textClassName, text, onEdit, onDelete }) {
+  const body = createEl('div', { className: bodyClassName });
+  const detailId = `annotation-detail-${kind}-${(annotationDetailSeq += 1)}`;
+  const { first, extra } = summarizeAnnotation(text);
+
+  const header = createEl('button', { className: 'annotation-header' });
+  header.type = 'button';
+  header.setAttribute('aria-controls', detailId);
+  // aria-hidden: the chevron is redundant with aria-expanded, which is the
+  // real state for assistive tech.
+  const chevron = createEl('span', { className: 'annotation-chevron', text: '▸' });
+  chevron.setAttribute('aria-hidden', 'true');
+  const summary = createEl('span', { className: 'annotation-summary', text: first });
+  const more = createEl('span', { className: 'annotation-more', text: extra > 0 ? `+${extra} more` : '' });
+  header.append(chevron, createEl('span', { className: labelClassName, text: labelText }), summary, more);
+
+  const detail = createEl('div', { className: 'annotation-detail' });
+  detail.id = detailId;
+  detail.appendChild(createEl('p', { className: textClassName, text }));
+
+  const actions = createEl('div', { className: 'comment-actions' });
+  const editBtn = createEl('button', { className: 'comment-btn', text: 'Edit' });
+  editBtn.type = 'button';
+  editBtn.addEventListener('click', onEdit);
+  const deleteBtn = createEl('button', { className: 'comment-btn comment-btn-danger', text: 'Delete' });
+  deleteBtn.type = 'button';
+  deleteBtn.addEventListener('click', onDelete);
+  actions.append(editBtn, deleteBtn);
+  detail.appendChild(actions);
+
+  function apply(isExpanded) {
+    header.setAttribute('aria-expanded', String(isExpanded));
+    chevron.textContent = isExpanded ? '▾' : '▸';
+    detail.hidden = !isExpanded;
+    // The summary is the collapsed stand-in for the text right below it --
+    // showing both at once would just be the first line twice.
+    summary.hidden = isExpanded;
+    more.hidden = isExpanded || extra === 0;
+    body.classList.toggle('annotation-collapsed', !isExpanded);
+  }
+
+  header.addEventListener('click', () => {
+    const next = header.getAttribute('aria-expanded') !== 'true';
+    setAnnotationExpanded(kind, key, next);
+    apply(next);
+  });
+
+  apply(isAnnotationExpanded(kind, key));
+  body.append(header, detail);
+  return body;
+}
+
+// ===========================================================================
 // Comment -- unchanged behavior from before notes existed, just scoped to
 // entry.commentBodyEl (a child of the shared wrapper) instead of owning the
 // whole section.
@@ -114,21 +221,19 @@ function renderCommentView(entry, { focusTrigger = false } = {}) {
 
   if (changePoint.comment) {
     commentBodyEl.classList.add('annotation-slot-expanded');
-    const body = createEl('div', { className: 'comment-body' });
-    body.appendChild(createEl('span', { className: 'comment-label', text: 'Comment' }));
-    body.appendChild(createEl('p', { className: 'comment-text', text: changePoint.comment }));
-
-    const actions = createEl('div', { className: 'comment-actions' });
-    const editBtn = createEl('button', { className: 'comment-btn', text: 'Edit' });
-    editBtn.type = 'button';
-    editBtn.addEventListener('click', () => enterCommentEdit(entry));
-    const deleteBtn = createEl('button', { className: 'comment-btn comment-btn-danger', text: 'Delete' });
-    deleteBtn.type = 'button';
-    deleteBtn.addEventListener('click', () => saveComment(entry, ''));
-    actions.append(editBtn, deleteBtn);
-    body.appendChild(actions);
-
-    commentBodyEl.appendChild(body);
+    commentBodyEl.appendChild(
+      buildAnnotationBody({
+        kind: 'comment',
+        key: changePoint.id,
+        bodyClassName: 'comment-body',
+        labelClassName: 'comment-label',
+        labelText: 'Comment',
+        textClassName: 'comment-text',
+        text: changePoint.comment,
+        onEdit: () => enterCommentEdit(entry),
+        onDelete: () => saveComment(entry, ''),
+      }),
+    );
     // Focus the shared section container, not editBtn -- see the tabIndex
     // comment in renderAllComments for why (space-reopens-editor bug).
     if (focusTrigger) entry.commentEl.focus();
@@ -146,6 +251,14 @@ function renderCommentView(entry, { focusTrigger = false } = {}) {
 // appState declaration -- for the whole time the textarea exists.
 export function enterCommentEdit(entry) {
   closeOpenEditor(entry.changePoint.id, 'comment');
+
+  // `c` (keyboard.js) and the header's own Edit button both land here, and
+  // `c` can fire on a collapsed comment -- editing something invisible would
+  // be disorienting, and cancelling out of it back into a collapsed row
+  // would look like the text was lost. Session-only (persist: false): being
+  // opened for editing is not the same as the user asking for this comment
+  // to stay open forever.
+  setAnnotationExpanded('comment', entry.changePoint.id, true, { persist: false });
 
   appState.isEditing = true;
   appState.editingKey = entry.changePoint.id;
@@ -231,6 +344,14 @@ async function saveComment(entry, text) {
   changePoint.comment = isEmpty ? null : text;
   const hasCommentAfter = changePoint.comment != null;
 
+  // Just-saved stays expanded so the user can confirm what was stored, but
+  // session-only -- persisting it would mean every comment ever written
+  // comes back expanded, which is the density problem this feature fixes.
+  // A cleared-and-saved (= deleted) comment drops its state immediately
+  // rather than waiting for the next load's prune.
+  if (hasCommentAfter) setAnnotationExpanded('comment', changePoint.id, true, { persist: false });
+  else forgetAnnotationExpanded('comment', changePoint.id);
+
   if (appState.tree && appState.tree.stats) {
     if (hadCommentBefore && !hasCommentAfter) appState.tree.stats.comments -= 1;
     if (!hadCommentBefore && hasCommentAfter) appState.tree.stats.comments += 1;
@@ -280,21 +401,19 @@ function renderNoteView(entry, { focusTrigger = false } = {}) {
 
   if (changePoint.note) {
     noteBodyEl.classList.add('annotation-slot-expanded');
-    const body = createEl('div', { className: 'note-body' });
-    body.appendChild(createEl('span', { className: 'note-label', text: 'Note' }));
-    body.appendChild(createEl('p', { className: 'note-text', text: changePoint.note }));
-
-    const actions = createEl('div', { className: 'comment-actions' });
-    const editBtn = createEl('button', { className: 'comment-btn', text: 'Edit' });
-    editBtn.type = 'button';
-    editBtn.addEventListener('click', () => enterNoteEdit(entry));
-    const deleteBtn = createEl('button', { className: 'comment-btn comment-btn-danger', text: 'Delete' });
-    deleteBtn.type = 'button';
-    deleteBtn.addEventListener('click', () => saveNote(entry, ''));
-    actions.append(editBtn, deleteBtn);
-    body.appendChild(actions);
-
-    noteBodyEl.appendChild(body);
+    noteBodyEl.appendChild(
+      buildAnnotationBody({
+        kind: 'note',
+        key: changePoint.id,
+        bodyClassName: 'note-body',
+        labelClassName: 'note-label',
+        labelText: 'Note',
+        textClassName: 'note-text',
+        text: changePoint.note,
+        onEdit: () => enterNoteEdit(entry),
+        onDelete: () => saveNote(entry, ''),
+      }),
+    );
     if (focusTrigger) entry.commentEl.focus();
   } else {
     noteBodyEl.classList.remove('annotation-slot-expanded');
@@ -308,6 +427,9 @@ function renderNoteView(entry, { focusTrigger = false } = {}) {
 
 export function enterNoteEdit(entry) {
   closeOpenEditor(entry.changePoint.id, 'note');
+
+  // Same as enterCommentEdit -- see the comment there.
+  setAnnotationExpanded('note', entry.changePoint.id, true, { persist: false });
 
   appState.isEditing = true;
   appState.editingKey = entry.changePoint.id;
@@ -386,6 +508,10 @@ async function saveNote(entry, text) {
   const isEmpty = typeof text !== 'string' || text.trim() === '';
   changePoint.note = isEmpty ? null : text;
 
+  // Same just-saved-stays-expanded / deleted-forgets rule as saveComment.
+  if (changePoint.note != null) setAnnotationExpanded('note', changePoint.id, true, { persist: false });
+  else forgetAnnotationExpanded('note', changePoint.id);
+
   // Same editingKind-guarded reset as saveComment, mirrored: this entry's
   // comment editor could independently be open right now, and must not be
   // clobbered by a note Delete/Save that doesn't refer to it.
@@ -398,16 +524,43 @@ async function saveNote(entry, text) {
 }
 
 // ===========================================================================
-// Orphan comments/notes -- change points whose underlying diff no longer
+// History comments/notes -- change points whose underlying diff no longer
 // exists (GET /api/diff's `orphans` array; see state.js buildAnnotated on
 // the backend). Never silently dropped: shown in their own section with the
 // filePath / functionName / diffText snapshot the annotation(s) were
-// originally attached to, entirely via textContent (that snapshot is
-// reviewed-repo content and must never be treated as markup). "Keep" needs
-// no API call -- not touching an orphan *is* keeping it; only "discard" hits
-// the network, and discards BOTH the comment and the note for that key at
-// once (see state.js discardOrphan) since the card represents one
-// change-point identity, not one annotation type.
+// originally attached to. "Keep" needs no API call -- not touching an entry
+// *is* keeping it; only "discard" hits the network, and discards BOTH the
+// comment and the note for that key at once (see state.js discardOrphan)
+// since the card represents one change-point identity, not one annotation
+// type.
+//
+// -- Naming ---------------------------------------------------------------
+// The user-visible wording is "History comments", not "Orphaned comments":
+// "orphan" reads like an error state, but nothing here is broken. What this
+// section actually holds is history -- annotations the user wrote whose code
+// has since been edited or removed, very often edited *because* of that very
+// annotation, which makes these the record of the review working rather than
+// wreckage left over from it. The identifiers below (orphan/orphans, the
+// CSS class names, appState.tree.orphans, POST /api/discard-orphan) keep the
+// old name on purpose: they are the backend's field names and renaming them
+// here would only put the client and the wire format out of step for a
+// wording change.
+//
+// -- The snapshot ---------------------------------------------------------
+// Rendered through diff.js's own buildUnifiedDiff(), not as flat text, so
+// re-reading an old annotation feels like reading the diff: same rows, same
+// low-opacity add/del tints, same Prism highlighting, and -- because it is
+// literally the same function -- no second renderer to keep in sync. See
+// parseSnapshotLines below for the two things that differ, both forced by
+// what diffText stores.
+//
+// Security is unchanged by that switch: the snapshot is reviewed-repo
+// content and still never reaches innerHTML raw. buildUnifiedDiff writes
+// every cell via textContent, with the single exception diff.js documents at
+// length -- buildCodeSpan assigning the *return value* of Prism.highlight(),
+// which escapes the source text itself before tokenising. A snapshot line
+// reading `<img src=x onerror=alert(1)>` renders as those characters, the
+// same as it did under the old textContent-only path.
 // ===========================================================================
 
 let orphansRootEl = null;
@@ -436,20 +589,74 @@ export function renderOrphans() {
   root.hidden = false;
 
   root.appendChild(
-    createEl('h2', { className: 'orphans-heading', text: `Orphaned comments (${orphans.length})` }),
+    createEl('h2', { className: 'orphans-heading', text: `History comments (${orphans.length})` }),
   );
   root.appendChild(
     createEl('p', {
       className: 'orphans-note',
       text:
-        'These change points no longer exist in the current diff -- the code was edited or removed. ' +
-        'Leaving an entry alone keeps it; only "Discard" deletes it.',
+        'Annotations you wrote on code that has since been edited or removed -- often edited ' +
+        'because of the annotation itself. Each snapshot below is the code as it stood when you ' +
+        'wrote it. Leaving an entry alone keeps it; only "Discard" deletes it.',
     }),
   );
 
   for (const orphan of orphans) {
     root.appendChild(buildOrphanCard(orphan));
   }
+}
+
+// Parses a stored diffText snapshot back into the `line` shape diff.js
+// renders (see model.js, which writes it as changedLines.map(line =>
+// `${line.type}${line.text}`).join('\n')).
+//
+// Two things about that format decide how this renders, and neither is a
+// shortcoming to work around:
+//
+//   No line numbers. diffText is the input to the content hash that lets a
+//   checkmark survive a rebase (see state.js's key derivation), so anything
+//   positional is excluded from it by design. oldLine/newLine are therefore
+//   set to null and buildUnifiedRow draws an empty gutter cell -- the gutter
+//   still occupies its width, so rows stay aligned with each other, it just
+//   says nothing. Back-calculating a number from the current file would be
+//   guessing at a file that has already changed out from under this
+//   snapshot, and a *wrong* line number is worse than an absent one.
+//
+//   Only changed lines. There are no context lines to find, so every row is
+//   an add or a del. A leading '+'/'-' is the marker and is stripped from
+//   the text (it goes in the .diff-marker cell, as in the live diff);
+//   anything else is treated as a context line with its text intact, which
+//   only happens if the format ever gains one -- a stray blank trailing
+//   entry from the final newline is dropped before that can matter.
+function parseSnapshotLines(diffText) {
+  if (typeof diffText !== 'string' || diffText === '') return [];
+  const raw = diffText.split('\n');
+  if (raw[raw.length - 1] === '') raw.pop(); // trailing newline, not a real line
+  return raw.map((text) => {
+    const marker = text[0];
+    const isChange = marker === '+' || marker === '-';
+    return {
+      type: isChange ? marker : ' ',
+      oldLine: null, // no line numbers in a snapshot, by design -- see above
+      newLine: null,
+      text: isChange ? text.slice(1) : text,
+    };
+  });
+}
+
+// The snapshot block for one history card. Always unified, regardless of
+// appState.viewMode: side-by-side pairs '-' runs against the '+' runs that
+// replaced them, and a snapshot has no context lines to anchor that pairing
+// against, so half the rows would come out as blank filler cells. Unified is
+// also what this content already was (a single flat column) -- it gains
+// highlighting and tints without also gaining a layout the surrounding card
+// was never sized for.
+function buildSnapshotDiff(orphan) {
+  const wrap = createEl('div', { className: 'orphan-diff' });
+  wrap.appendChild(
+    buildUnifiedDiff(parseSnapshotLines(orphan.diffText), getPrismLanguage(orphan.filePath)),
+  );
+  return wrap;
 }
 
 function buildOrphanCard(orphan) {
@@ -463,9 +670,7 @@ function buildOrphanCard(orphan) {
   }
   card.appendChild(meta);
 
-  const diffPre = createEl('pre', { className: 'orphan-diff' });
-  diffPre.textContent = orphan.diffText || '';
-  card.appendChild(diffPre);
+  card.appendChild(buildSnapshotDiff(orphan));
 
   // orphan.text/orphan.note are independently nullable (see state.js
   // buildAnnotated) -- an orphan can carry a comment, a note, or both, so
@@ -500,6 +705,10 @@ async function discardOrphan(key, cardEl) {
   if (appState.tree) {
     appState.tree.orphans = appState.tree.orphans.filter((o) => o.key !== key);
   }
+  // Discard removes both annotation types for this key (see state.js
+  // discardOrphan), so both collapse entries go with them.
+  forgetAnnotationExpanded('comment', key);
+  forgetAnnotationExpanded('note', key);
   cardEl.remove();
   if (orphansRootEl && (!appState.tree || appState.tree.orphans.length === 0)) {
     orphansRootEl.hidden = true;
