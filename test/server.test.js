@@ -130,8 +130,13 @@ describe('static file serving', () => {
   test('GET / serves public/index.html', async () => {
     const res = await fetch(`${baseUrl}/`);
     assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') ?? '', /text\/html/);
     const text = await res.text();
-    assert.match(text, /local-code-review/);
+    // Assert on structure the page cannot function without, not on display
+    // text. This previously matched the product name, so renaming the title
+    // broke the test while nothing about the behaviour had changed.
+    assert.match(text, /<script type="module" src="app\.js">/);
+    assert.match(text, /id="tree-pane"/);
   });
 
   test('GET /index.html serves the same file directly', async () => {

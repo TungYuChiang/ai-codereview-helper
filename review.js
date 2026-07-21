@@ -14,7 +14,7 @@ server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(
       `Port ${PORT} is already in use. Stop whatever is using it (or wait for it to ` +
-        `exit) and try again -- local-code-review always runs on ${PORT} so bookmarks stay valid.`,
+        `exit) and try again -- AI CodeReview Helper always runs on ${PORT} so bookmarks stay valid.`,
     );
     process.exit(1);
   }
@@ -23,5 +23,5 @@ server.on('error', (err) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`local-code-review running at http://${HOST}:${PORT}`);
+  console.log(`AI CodeReview Helper running at http://${HOST}:${PORT}`);
 });
