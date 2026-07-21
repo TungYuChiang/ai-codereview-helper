@@ -117,9 +117,29 @@ export function updateStatsDom() {
 // keeps the dependency one-directional.
 // ===========================================================================
 
-export function selectChangePoint(key, { scroll = false } = {}) {
+// How long the scroll-spy defers to an explicit selection before it's
+// allowed to reassign `current` again -- see handleIntersections' block
+// comment below for why this exists. Comfortably longer than the 150ms
+// smooth-scroll animation below (and than pane.js's instant cross-file
+// jump, which is synchronous but whose resulting IntersectionObserver
+// callback still arrives a frame or two later), with margin for observer
+// delivery latency.
+const SPY_SUPPRESS_MS = 400;
+let spySuppressedUntil = 0;
+
+export function selectChangePoint(key, { scroll = false, _fromSpy = false } = {}) {
   if (!key || !dom.changePoints.has(key)) return;
   if (appState.currentKey === key && !scroll) return;
+
+  // Any call that did NOT originate from the scroll-spy itself is an
+  // explicit navigation -- a tree-row click, j/k, u, or pane.js's
+  // cross-file jump (which calls this with scroll:false and then does its
+  // own instant scrollIntoView right after, outside this function's view).
+  // All of those either animate or jump the pane to a new position; give
+  // that motion a window to settle before the spy's own geometry check gets
+  // a vote again, or it will "correct" the selection mid-flight to whatever
+  // transient entry happens to be passing through the centre band.
+  if (!_fromSpy) spySuppressedUntil = performance.now() + SPY_SUPPRESS_MS;
 
   const prevKey = appState.currentKey;
   appState.currentKey = key;
@@ -131,9 +151,12 @@ export function selectChangePoint(key, { scroll = false } = {}) {
     if (!entry.rightContainer) return;
     // Addendum: j/k movement gets a 150ms smooth scroll so the user can
     // perceive direction, but prefers-reduced-motion always wins -- jump
-    // instantly instead.
+    // instantly instead. Centre (not start/top) alignment so the landing
+    // spot agrees with the scroll-spy's own "current = centred" rule below
+    // -- see that block comment for why mismatched alignment would fight
+    // the very selection this scroll is making.
     const behavior = prefersReducedMotion() ? 'auto' : 'smooth';
-    entry.rightContainer.scrollIntoView({ block: 'start', behavior });
+    entry.rightContainer.scrollIntoView({ block: 'center', behavior });
   }
 }
 
@@ -154,27 +177,68 @@ function setHighlight(key, on) {
 
 // ===========================================================================
 // Scroll spy: right-pane scroll -> left tree highlight, via
-// IntersectionObserver (per brief). Root is the main pane's own scroll
-// container, not the viewport, since the main pane scrolls independently.
-// ===========================================================================
+// IntersectionObserver. Root is the main pane's own scroll container, not
+// the viewport, since the main pane scrolls independently.
+//
+// "Current" means whichever change point occupies the reader's line of
+// sight -- the vertical MIDDLE of the main pane -- not whichever is nearest
+// the top. A reader's eyes sit near the centre of the screen, not glued to
+// its top edge; anchoring "current" to a top band means a change point
+// taller than that band goes stale (still "current" long after the reader
+// has scrolled well past it) while a short one lower on screen -- the one
+// actually being read -- never lights up until it reaches the top. See the
+// task brief's screenshot: highlighted +269..275 while the reader was
+// actually at +281..302, one entry behind, on a screen full of short change
+// points -- exactly that.
+//
+// Implementation: rootMargin below shrinks the observer's effective root to
+// a thin band centred on the pane's own vertical middle (see BAND_MARGIN).
+// IntersectionObserver keeps doing the actual geometry work off the main
+// thread (browser-native, on the compositor), firing a callback only when
+// some target's membership in that band changes -- NOT on every scroll
+// pixel -- which is what keeps this from doing work proportional to the
+// change-point count on every scroll event (the perf constraint). A
+// scroll-listener + getBoundingClientRect-per-entry alternative was
+// considered and rejected for exactly that reason: it would force a
+// synchronous layout read in a loop over every observed entry on every
+// (throttled) scroll tick, where this does none.
+//
+// Persistent intersection state, keyed by change-point id, for the same
+// reason as before this change: an IntersectionObserver callback only ever
+// reports the *delta* -- targets whose isIntersecting flag changed since
+// the previous callback -- not the full set of everything currently
+// intersecting. Two change points whose combined height covers the centre
+// band can both be "in play" at once, but only one of them may appear in a
+// given batch (the other's state simply didn't change). Deriving the
+// current selection from the batch alone would silently pick whichever
+// change point happened to flip most recently rather than whichever one is
+// actually centred right now -- and that wrong pick can even land on an
+// already-checked change point, corrupting `u`'s "jump to next unread"
+// guarantee (the bug this map originally fixed). Tracking cumulative state
+// here and deriving the selection from the whole map, every time, is what
+// this file already did for the top-band version; the middle-band version
+// below keeps that mechanism unchanged and just changes what "best" means.
+const intersectionState = new Map(); // key -> { isIntersecting, top, height }
 
-// Persistent intersection state, keyed by change-point id. An
-// IntersectionObserver callback only ever reports the *delta* -- targets
-// whose isIntersecting flag changed since the previous callback -- not the
-// full set of everything currently intersecting. Two change points that
-// render close together relative to the top band (rootMargin below) can
-// both be "in play" at once, but only one of them may appear in a given
-// batch (the other's state simply didn't change). Deriving the current
-// selection from the batch alone therefore silently picks whichever
-// change point happened to flip most recently, not whichever one is
-// actually topmost right now -- and that wrong pick can even be an
-// already-checked change point, which corrupts `u`'s "jump to next
-// unread" guarantee. Tracking cumulative state in this map and deriving
-// the selection from the whole map, every time, fixes that: every batch
-// updates the map, then the topmost currently-intersecting entry (by
-// boundingClientRect.top) is recomputed from the full map, not just the
-// entries the batch happened to mention.
-const intersectionState = new Map(); // key -> { isIntersecting, top }
+// Thickness of the centre band, as rootMargin's shrink from each edge.
+// -40% top and -40% bottom leaves the middle 20% of the pane as the
+// "occupying the reader's line of sight" region. Wide enough that there is
+// almost always something in it (so scrolling never has to "hunt" for a
+// candidate), narrow enough that with several short change points visible
+// at once, only the one or two actually near centre qualify -- the
+// nearest-to-centre tie-break below (and the hysteresis bias toward the
+// existing selection) resolves any overlap deterministically. A change
+// point taller than the viewport spans the band for as long as any part of
+// it is on screen, so it wins for the entire time it fills the screen, by
+// construction.
+const BAND_MARGIN = '-40% 0px -40% 0px';
+
+// Vertical centre (viewport coordinates) of the band computed above, kept
+// up to date from each callback's IntersectionObserverEntry.rootBounds --
+// which is already the root's rect AFTER rootMargin is applied, i.e.
+// exactly the band's own rect -- so this never needs its own
+// getBoundingClientRect() call (would force a synchronous layout read).
+let bandCenter = 0;
 
 // `entries` -- the change points belonging to whichever file is currently
 // open (single-file-view unit: no longer every change point in every file,
@@ -184,9 +248,7 @@ export function setupScrollSpy(entries) {
   intersectionState.clear();
   dom.scrollObserver = new IntersectionObserver(handleIntersections, {
     root: mainPaneEl,
-    // Treat "current" as whichever change point occupies the top band of
-    // the main pane, not merely "any pixel visible".
-    rootMargin: '0px 0px -70% 0px',
+    rootMargin: BAND_MARGIN,
     threshold: 0,
   });
   for (const entry of entries) {
@@ -201,17 +263,48 @@ function handleIntersections(batch) {
     intersectionState.set(key, {
       isIntersecting: e.isIntersecting,
       top: e.boundingClientRect.top,
+      height: e.boundingClientRect.height,
     });
+    if (e.rootBounds) bandCenter = e.rootBounds.top + e.rootBounds.height / 2;
   }
 
-  let topKey = null;
-  let topValue = Infinity;
+  // Explicit navigation (tree click / j/k / u / pane.js's cross-file jump)
+  // just moved the selection and may still be mid-scroll -- smooth-scroll
+  // animation within a file, or an instant jump across a file boundary.
+  // selectChangePoint() opened this suppression window at the moment it set
+  // that selection; honour it here rather than racing the animation and
+  // reassigning `current` to whatever transient entry is passing through
+  // the centre band at this instant. See selectChangePoint's own comment
+  // for the other half of this.
+  if (performance.now() < spySuppressedUntil) return;
+
+  // Hysteresis: if the current selection is still intersecting the band at
+  // all, keep it, even if some other visible entry is now marginally closer
+  // to dead centre. Without this, two change points whose shared boundary
+  // sits near the band edge would trade `current` back and forth on every
+  // sub-pixel scroll adjustment while the reader is essentially stationary
+  // (or scrolling slowly) -- the flicker the brief warns about. Only once
+  // the current selection actually leaves the band do we look for a
+  // replacement, biasing toward staying put over chasing the exact centre.
+  const currentKey = appState.currentKey;
+  if (currentKey) {
+    const cur = intersectionState.get(currentKey);
+    if (cur && cur.isIntersecting) return;
+  }
+
+  let bestKey = null;
+  let bestDistance = Infinity;
   for (const [key, state] of intersectionState) {
     if (!state.isIntersecting) continue;
-    if (state.top < topValue) {
-      topValue = state.top;
-      topKey = key;
+    const center = state.top + state.height / 2;
+    const distance = Math.abs(center - bandCenter);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestKey = key;
     }
   }
-  if (topKey) selectChangePoint(topKey, { scroll: false });
+  // No candidate currently intersecting the band (can happen mid-fast-scroll
+  // for a brief instant) -- leave the selection exactly where it was rather
+  // than clearing it; the next batch will resolve it.
+  if (bestKey) selectChangePoint(bestKey, { scroll: false, _fromSpy: true });
 }
