@@ -1,2 +1,6 @@
 .superpowers/
 node_modules/
+
+# 開發過程的驗收截圖：30MB+、對使用者無價值，且可能含被 review 專案的
+# 原始碼畫面。留在本機、不進版控。
+docs/dev-log/screenshots/
