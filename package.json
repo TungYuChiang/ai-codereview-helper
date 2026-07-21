@@ -1,7 +1,7 @@
 {
-  "name": "local-code-review",
+  "name": "ai-codereview-helper",
   "version": "0.1.0",
-  "description": "Local branch code review tool with per-change-point checkmarks and comments",
+  "description": "AI CodeReview Helper — 在沒有 GitHub 的環境下取得 PR review 體驗：逐處打勾、留下疑問、中斷後接著看",
   "directories": {
     "doc": "docs"
   },

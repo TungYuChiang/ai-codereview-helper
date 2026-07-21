@@ -1,4 +1,4 @@
-# local-code-review
+# AI CodeReview Helper
 
 在沒有 GitHub 的環境下，取得 PR review 的核心體驗：**看過的地方打勾、有疑問的地方留言、中斷後接著看**。
 
@@ -30,7 +30,7 @@
 
 ```bash
 git clone <這個 repo>
-cd local-code-review
+cd ai-codereview-helper
 npm install
 node review.js
 ```
