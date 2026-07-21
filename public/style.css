@@ -1491,9 +1491,17 @@ input[type="checkbox"]:checked::after {
 /* used for the side-by-side "no line here" filler) doubles as this row's   */
 /* backdrop -- both are "this is not a code line" surfaces, same visual     */
 /* role, no new token needed. Full-width by default (ordinary block flow    */
-/* inside .diff-body, see app.js's buildExpandRow/renderChangePointContent) */
-/* so it reads as one continuous bar in unified mode and correctly spans    */
-/* *both* side-by-side columns without needing to live inside either one.  */
+/* inside .diff-body, see diff.js's buildGapAboveRow/buildGapBelowRow/       */
+/* renderChangePointContent) so it reads as one continuous bar in unified   */
+/* mode and correctly spans *both* side-by-side columns without needing to  */
+/* live inside either one.                                                  */
+/*                                                                          */
+/* .diff-expand-above is one shared row per GAP, not per change-point side  */
+/* (bidirectional-expand unit) -- it can show up to three controls at once  */
+/* (↑, ↓, 全部) where every other .diff-expand-row (.diff-expand-below, the */
+/* unbounded end-of-file case) only ever shows one, hence the flex-wrap     */
+/* below: three compact buttons fit on one line at ordinary widths, but     */
+/* shouldn't force horizontal overflow in a narrow side-by-side column.    */
 /* ---------------------------------------------------------------------- */
 
 .diff-body {
@@ -1513,15 +1521,16 @@ input[type="checkbox"]:checked::after {
   font-size: 11px;
 }
 
-/* Primary expand button (advances EXPAND_STEP lines, or the true remaining
- * count when fewer than that are left -- see buildExpandRow in app.js) and
- * the "expand all" secondary sit in one flex row so they read as one
- * control, the secondary visually subordinate to the primary: it is the
- * occasional choice (a wide gap you actually want to see in full), not the
- * default click. */
+/* Primary expand button(s) (advance EXPAND_STEP lines, or the true
+ * remaining count when fewer than that are left -- see buildGapAboveRow/
+ * buildGapBelowRow in diff.js) and the "expand all" secondary sit in one
+ * flex row so they read as one control, the secondary visually subordinate
+ * to the primary: it is the occasional choice (a wide gap you actually want
+ * to see in full), not the default click. */
 .diff-expand-controls {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -1603,16 +1612,47 @@ input[type="checkbox"]:checked::after {
 }
 
 /* ---------------------------------------------------------------------- */
-/* Comment UI -- add/edit/delete a comment on a change point. Amber/note   */
-/* token throughout (--color-note is documented as "comments / attention",*/
-/* deliberately distinct from the green accent used for read/progress).   */
+/* Comment + note UI -- add/edit/delete a comment and/or a note on a       */
+/* change point (personal-notes unit). Amber/note token stays on the       */
+/* COMMENT half only (--color-note is documented as "comments / attention",*/
+/* deliberately distinct from the green accent used for read/progress) --  */
+/* a note is the opposite of "needs attention" ("I understood this,        */
+/* recording it for myself"), so it deliberately gets NO color of its own:  */
+/* --color-fg-dim/--color-fg-muted (the same neutral text ramp buttons      */
+/* already use) is enough to tell it apart from an amber comment while      */
+/* never competing with green (diff add), terracotta (read/progress/open   */
+/* file) or amber (comment) for attention. See comments.js's own header     */
+/* comment for the full reasoning.                                         */
+/*                                                                          */
+/* .comment-section is ONE shared flex-wrap row for both halves (see       */
+/* .annotation-slot below) rather than two stacked sections, so a change    */
+/* point with neither yet shows one compact "+ Comment  + Note" line        */
+/* instead of two -- density matters here since a real review is a         */
+/* thousand-plus lines and most change points start with neither.          */
 /* ---------------------------------------------------------------------- */
 
 .comment-section {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px 14px;
   padding: 8px 10px;
   border-top: 1px solid var(--color-border);
   font-family: var(--font-sans);
   font-size: 12.5px;
+}
+
+/* Each half (comment, note) sits here at its natural (button-only) width
+ * until it has real content or is being edited, at which point
+ * .annotation-slot-expanded claims the full row -- see renderCommentView/
+ * renderNoteView in comments.js, the only place that class is toggled. */
+.annotation-slot {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.annotation-slot-expanded {
+  flex: 1 1 100%;
 }
 
 .comment-add-btn {
@@ -1624,7 +1664,13 @@ input[type="checkbox"]:checked::after {
   color: var(--color-note);
 }
 
-.comment-body {
+/* Deliberately no .note-add-btn color rule: it inherits the plain neutral
+ * `button` treatment (fg-dim on panel, border-strong) already defined
+ * above -- see the block comment at the top of this section for why a note
+ * gets no color of its own. */
+
+.comment-body,
+.note-body {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1638,7 +1684,16 @@ input[type="checkbox"]:checked::after {
   color: var(--color-note);
 }
 
-.comment-text {
+.note-label {
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-fg-muted);
+}
+
+.comment-text,
+.note-text {
   margin: 0;
   color: var(--color-fg-dim);
   line-height: 1.5;
@@ -1745,10 +1800,24 @@ input[type="checkbox"]:checked::after {
   overflow-x: auto;
 }
 
+/* An orphan card's own comment/note labels (see comments.js's
+ * buildOrphanCard) -- unlike the live comment-section's flex-column .comment-
+ * body/.note-body, an orphan card is plain block flow, so the label needs
+ * its own block display + spacing rather than relying on a flex gap. */
+.orphan-card .comment-label,
+.orphan-card .note-label {
+  display: block;
+  margin: 0 0 2px 0;
+}
+
 .orphan-comment {
   margin: 0 0 8px 0;
   color: var(--color-fg-dim);
   white-space: pre-wrap;
+}
+
+.orphan-note {
+  margin-top: -4px; /* label above sits close to its own text, same rhythm as .orphan-comment */
 }
 
 .orphan-actions {

@@ -33,7 +33,7 @@
 // which file is open) -- nothing here imports tree.js back, no cycle.
 
 import { appState, dom, createEl, changepointsRootEl, mainPaneEl, filePaneHeaderEl } from './state.js';
-import { renderChangePointContent, runExpand, EXPAND_AUTO_THRESHOLD } from './diff.js';
+import { renderChangePointContent, runGapExpand, makeGap, EXPAND_AUTO_THRESHOLD } from './diff.js';
 import { onToggleCheck, selectChangePoint, setupScrollSpy } from './nav.js';
 import { renderAllComments } from './comments.js';
 import { persistCurrentFile } from './prefs.js';
@@ -102,7 +102,10 @@ export function renderChangePointTreeRow(changePoint, group, file, groupKey, par
     rightCheckbox: null,
     contentEl: null,
     commentEl: null,
-    expand: null,
+    commentBodyEl: null,
+    noteBodyEl: null,
+    gapAbove: null,
+    gapBelow: null,
   });
   appState.order.push(key);
 }
@@ -142,79 +145,51 @@ function renderChangePointPane(entry, neighborMap) {
 
   changepointsRootEl.appendChild(container);
 
-  // --- expand-context state --------------------------------------------
-  // EXTENSION POINT (ui-expand-context unit): "expand above/below" pulls in
-  // the surrounding unmodified file content, GitHub/GitLab-style. aboveLimit/
-  // belowLimit are the farthest this change point is ever allowed to reach
-  // in each direction -- the neighboring change point's own edge (never
-  // cross into another change point's territory), or the literal top of
-  // the file above. belowLimit is `null` when there is no next change
-  // point in the file: the distance to the true end of the file is not
-  // knowable without asking the server (see runExpand/applyExpandResult in
-  // diff.js), so unlike aboveLimit it cannot be filled in for free here.
+  // --- gap state (ui-expand-context unit) --------------------------------
+  // "Expand above/below" pulls in the surrounding unmodified file content,
+  // GitHub/GitLab-style. Ownership is per-GAP, not per-change-point-side:
+  // gapAbove is the unmodified stretch immediately above this change point,
+  // down to (exclusive) the previous change point's end, or down to line 1
+  // if there is none -- both edges are always known for free, so this
+  // exists for EVERY change point, including the first in the file (whose
+  // gapAbove simply has top === 1). gapBelow only exists on the LAST change
+  // point in the file: the region below it has no knowable lower edge
+  // without asking the server (see makeGap/diff.js's block comment), so it
+  // cannot be a bounded two-directional gap the way gapAbove always is.
   //
-  // Ownership of the gap *between* two adjacent change points: it belongs
-  // exclusively to the earlier one's "below" side, never to the later one's
-  // "above" side too. Each of the two entries would otherwise compute the
-  // exact same [prev.newEnd+1 .. next.newStart-1] window independently
-  // (this entry's aboveLimit === the previous entry's belowLimit) and fetch
-  // it twice -- confirmed live while building this: the network log showed
-  // the identical `/api/lines?...start=6&end=10` request fire twice, once
-  // from each side. So a change point only ever gets a real "above" (button
-  // or auto-load) when it is the *first* in its file, i.e. there is no
-  // previous neighbor to have already claimed that space above it. Every
-  // other change point's aboveDone is forced true -- its upward gap is
-  // always the previous change point's "below" to offer instead.
+  // Because the gap between two change points is now built exactly once,
+  // by exactly one of them (the later one's gapAbove), the previous
+  // design's bug class -- two entries independently computing the same
+  // [prev.newEnd+1 .. next.newStart-1] window and fetching it twice
+  // (confirmed live: the network log showed the identical
+  // `/api/lines?...start=6&end=10` request fire twice, once from each
+  // side) -- cannot happen: there is only one place holding the state and
+  // rendering it, so nothing needs deduplicating.
   const neighbor = (neighborMap && neighborMap.get(key)) || { prev: null, next: null };
-  const aboveLimit = neighbor.prev ? neighbor.prev.newEnd + 1 : 1;
-  const belowLimit = neighbor.next ? neighbor.next.newStart - 1 : null;
-  const isFirstInFile = !neighbor.prev;
+  const aboveTop = neighbor.prev ? neighbor.prev.newEnd + 1 : 1;
+  const isLastInFile = !neighbor.next;
 
   entry.rightContainer = container;
   entry.rightCheckbox = rightCheckbox;
   entry.contentEl = content;
-  entry.expand = {
-    filePath: file.path,
-    aboveLimit,
-    belowLimit,
-    aboveLoaded: changePoint.newStart, // smallest line number currently shown
-    belowLoaded: changePoint.newEnd,   // largest line number currently shown
-    aboveLines: [],                    // loaded context, ascending, prepended
-    belowLines: [],                    // loaded context, ascending, appended
-    aboveDone: !isFirstInFile || changePoint.newStart - aboveLimit <= 0,
-    belowDone: belowLimit != null && belowLimit - changePoint.newEnd <= 0,
-    aboveLoading: false,
-    belowLoading: false,
-    aboveError: null,
-    belowError: null,
-    aboveWanted: null, // lines requested by the in-flight/last-attempted
-    belowWanted: null, // fetch, so a retry after an error repeats the
-                        // same-sized request rather than silently
-                        // defaulting to a different one (see runExpand).
-  };
+  entry.gapAbove = makeGap(file.path, aboveTop, changePoint.newStart - 1);
+  entry.gapBelow = isLastInFile ? makeGap(file.path, changePoint.newEnd + 1, null) : null;
 
   renderChangePointContent(entry);
 
   // Small gaps read worse behind a click than just shown (brief: "collapsing
-  // a three-line gap behind a click is worse than just showing it"), so
-  // anything within EXPAND_AUTO_THRESHOLD lines of a neighbor -- or of the
-  // top of the file, which is knowable for free -- loads immediately instead
-  // of waiting for a click. The bottom-of-file case is deliberately excluded:
-  // whether that gap is small is unknowable without a request (see belowLimit
-  // above), so the last change point in a file always gets a real button,
-  // never a silent auto-load. "above" is further gated on isFirstInFile per
-  // the ownership rule above -- otherwise this re-triggers the exact
-  // duplicate-fetch bug that rule exists to prevent.
-  if (isFirstInFile) {
-    const aboveGap = changePoint.newStart - aboveLimit;
-    if (aboveGap > 0 && aboveGap <= EXPAND_AUTO_THRESHOLD) {
-      runExpand(entry, 'above');
-    }
-  }
-  if (belowLimit != null) {
-    const belowGap = belowLimit - changePoint.newEnd;
-    if (belowGap > 0 && belowGap <= EXPAND_AUTO_THRESHOLD) {
-      runExpand(entry, 'below');
+  // a three-line gap behind a click is worse than just showing it"), so a
+  // gapAbove within EXPAND_AUTO_THRESHOLD lines loads immediately instead of
+  // waiting for a click -- for every change point now, not just the first in
+  // its file, since every change point's gapAbove is a real, singly-owned
+  // gap. gapBelow (the EOF case) is deliberately excluded regardless of
+  // size: whether it's small is unknowable without a request (its lower
+  // edge isn't known until the server answers), so the last change point in
+  // a file always gets a real button, never a silent auto-load.
+  if (entry.gapAbove) {
+    const size = entry.gapAbove.bottom - entry.gapAbove.top + 1;
+    if (size <= EXPAND_AUTO_THRESHOLD) {
+      runGapExpand(entry, entry.gapAbove, 'top', size);
     }
   }
 }
@@ -311,7 +286,10 @@ export function openFile(path) {
       entry.rightCheckbox = null;
       entry.contentEl = null;
       entry.commentEl = null;
-      entry.expand = null;
+      entry.commentBodyEl = null;
+      entry.noteBodyEl = null;
+      entry.gapAbove = null;
+      entry.gapBelow = null;
     }
     if (dom.scrollObserver) {
       dom.scrollObserver.disconnect();
@@ -367,11 +345,15 @@ function renderFilePane(path) {
     entry.rightCheckbox = null;
     entry.contentEl = null;
     entry.commentEl = null;
-    entry.expand = null;
+    entry.commentBodyEl = null;
+    entry.noteBodyEl = null;
+    entry.gapAbove = null;
+    entry.gapBelow = null;
   }
   if (appState.isEditing) {
     appState.isEditing = false;
     appState.editingKey = null;
+    appState.editingKind = null;
   }
   if (dom.scrollObserver) {
     dom.scrollObserver.disconnect();
