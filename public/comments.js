@@ -577,19 +577,47 @@ function ensureOrphansRootEl() {
   return orphansRootEl;
 }
 
+// -- Scoping ---------------------------------------------------------------
+// This section is an appendix to the right pane, and the right pane shows
+// exactly one file (see pane.js's openFile). Rendering every orphan in the
+// repo underneath it put selector.js's history at the bottom of system.css's
+// page -- the section looked like it belonged to the open file and did not.
+// So the visible set is the open file's orphans, and openFile() re-renders on
+// every switch; this used to be called once only, from tree.js's build.
+//
+// The exception is orphans whose file is no longer in the diff at all, which
+// is one of the ordinary ways an orphan is made: the change point did not
+// merely move, its whole file stopped differing from base. Those have no row
+// in the sidebar, so no file selection could ever bring them on screen --
+// scoping alone would leave them permanently invisible *and* permanently
+// undiscardable, with their annotations still in the state file. They show
+// regardless of selection, in their own group, since being unreachable is the
+// only thing they have in common with one another.
 export function renderOrphans() {
   const root = ensureOrphansRootEl();
   root.textContent = '';
 
-  const orphans = (appState.tree && appState.tree.orphans) || [];
-  if (orphans.length === 0) {
+  const all = (appState.tree && appState.tree.orphans) || [];
+  const filesInDiff = new Set(((appState.tree && appState.tree.files) || []).map((f) => f.path));
+
+  const forOpenFile = appState.currentFile
+    ? all.filter((o) => o.filePath === appState.currentFile)
+    : [];
+  // Disjoint from forOpenFile by construction: currentFile is only ever set
+  // to a path taken from the tree, so it is always in filesInDiff.
+  const unreachable = all.filter((o) => !filesInDiff.has(o.filePath));
+
+  if (forOpenFile.length === 0 && unreachable.length === 0) {
     root.hidden = true;
     return;
   }
   root.hidden = false;
 
   root.appendChild(
-    createEl('h2', { className: 'orphans-heading', text: `History comments (${orphans.length})` }),
+    createEl('h2', {
+      className: 'orphans-heading',
+      text: `History comments (${forOpenFile.length + unreachable.length})`,
+    }),
   );
   root.appendChild(
     createEl('p', {
@@ -601,8 +629,29 @@ export function renderOrphans() {
     }),
   );
 
-  for (const orphan of orphans) {
+  for (const orphan of forOpenFile) {
     root.appendChild(buildOrphanCard(orphan));
+  }
+
+  if (unreachable.length > 0) {
+    root.appendChild(
+      createEl('p', {
+        className: 'orphans-note orphans-subnote',
+        // Phrased as "no longer in this diff" rather than "no longer differs
+        // from the base revision" to sidestep subject-verb agreement across
+        // the singular/plural split -- the first draft shipped "files that no
+        // longer differs", caught when the branch was finally exercised.
+        text:
+          `${unreachable.length} from ` +
+          `${unreachable.length === 1 ? 'a file' : 'files'} no longer in this diff. There is no ` +
+          `file to open ${unreachable.length === 1 ? 'it' : 'them'} under, so ` +
+          `${unreachable.length === 1 ? 'it stays' : 'they stay'} here whichever file you are ` +
+          'reading.',
+      }),
+    );
+    for (const orphan of unreachable) {
+      root.appendChild(buildOrphanCard(orphan));
+    }
   }
 }
 

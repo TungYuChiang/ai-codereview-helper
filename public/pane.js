@@ -43,7 +43,7 @@ import {
 } from './state.js';
 import { renderChangePointContent, runGapExpand, makeGap, EXPAND_AUTO_THRESHOLD } from './diff.js';
 import { onToggleCheck, selectChangePoint, setupScrollSpy } from './nav.js';
-import { renderAllComments } from './comments.js';
+import { renderAllComments, renderOrphans } from './comments.js';
 import { persistCurrentFile } from './prefs.js';
 
 // key -> { prev: ChangePoint|null, next: ChangePoint|null }, by newStart
@@ -370,12 +370,18 @@ export function openFile(path) {
         createEl('p', { className: 'empty-state', text: 'No differences between these two revisions.' }),
       );
     }
+    // With no file open the section can still have content: orphans whose
+    // file left the diff show whatever the selection. See renderOrphans.
+    renderOrphans();
     return;
   }
 
   if (path === appState.currentFile) return;
 
   renderFilePane(path);
+  // The history section is an appendix to this pane and is scoped to the file
+  // it sits under, so it has to be rebuilt alongside it.
+  renderOrphans();
 
   // Land on the file's first change point (if it has one) so
   // appState.currentKey keeps pointing at something inside whichever file

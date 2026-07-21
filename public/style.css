@@ -1891,6 +1891,17 @@ input[type="checkbox"]:checked::after {
   color: var(--color-fg-dim);
 }
 
+/* Introduces the section's second group -- orphans whose file is no longer
+ * in the diff (see renderOrphans). It sits *between* two runs of cards
+ * rather than under a heading, so it needs a rule above it to read as a
+ * divider; without one the cards below look like more of the open file's
+ * history, which is the confusion this whole unit exists to remove. */
+.orphans-subnote {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+
 .orphan-card {
   background: var(--color-panel);
   border: 1px solid var(--color-border-strong);
