@@ -64,31 +64,56 @@
   --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  /* -- surfaces -- */
-  --color-bg: #0f172a;         /* page background */
-  --color-panel: #131c31;      /* raised panel (current change point body) */
-  --color-surface: #0b111f;    /* topbar / footer band */
-  --color-track: #1c2437;      /* progress-bar / checkbox track */
+  /* -- surfaces --
+     "Claude Code" default theme (replaces the old Slate blue-grey default,
+     see design-system dev-log for the full writeup). Neutral near-black
+     greys -- R/G/B kept equal (0 saturation) rather than the old #0f172a
+     family's blue-leaning hue, per the brief's "灰而不是藍灰" instruction.
+     Verified with a real screen reader of hue: old bg #0f172a has B>R by
+     27; these have R=G=B exactly. */
+  --color-bg: #191919;         /* page background */
+  --color-panel: #212121;      /* raised panel (current change point body) */
+  --color-surface: #141414;    /* topbar / footer band */
+  --color-track: #2b2b2b;      /* progress-bar / checkbox track */
 
   /* -- borders / separators -- */
-  --color-border: #1e293b;     /* hairline separators */
-  --color-border-strong: #334155; /* control outlines (select, checkbox, pill) */
+  --color-border: #2f2f2f;     /* hairline separators */
+  --color-border-strong: #474747; /* control outlines (select, checkbox, pill) */
 
-  /* -- text -- */
-  --color-fg: #f8fafc;         /* primary text */
-  --color-fg-dim: #cbd5e1;     /* secondary text (function names, headers) */
-  --color-fg-muted: #94a3b8;   /* directory paths, gutter numbers */
-  --color-fg-faint: #64748b;   /* least emphasis: counts, disabled */
-  --color-fg-ghost: #475569;   /* unread status rail, placeholder */
+  /* -- text --
+     fg carries a few units of warm bias (R slightly > G slightly > B) per
+     "柔和的暖白...不要刺眼的純白" -- everything else in this family stays on
+     that same warm-neutral ramp so the whole text scale reads as one
+     family, not fg alone looking tinted against neutral-grey siblings. */
+  --color-fg: #f2efe9;         /* primary text */
+  --color-fg-dim: #cdc9c1;     /* secondary text (function names, headers) */
+  --color-fg-muted: #9f9b93;   /* directory paths, gutter numbers */
+  --color-fg-faint: #78746c;   /* least emphasis: counts, disabled */
+  --color-fg-ghost: #57534c;   /* unread status rail, placeholder */
 
-  /* -- accent / semantic -- */
-  --color-accent: #22c55e;        /* progress, read state, additions */
-  --color-accent-fg: #052e16;     /* text on top of solid accent fill */
-  --color-accent-wash: rgba(34, 197, 94, 0.12);   /* diff add row tint */
-  --color-accent-wash-strong: rgba(34, 197, 94, 0.32);
-  --color-destructive: #ef4444;   /* deletions, errors */
+  /* -- accent / semantic --
+     Claude's clay/terracotta brand color (#D97757), sourced from Anthropic's
+     published brand palette (see dev-log), replaces the old green accent.
+     Semantic split (brief's conflict to resolve -- green meant three things
+     at once: read state, progress, diff additions):
+       - read state / progress / current-selection / primary buttons -> now
+         accent (orange), via the --color-rail-... tokens and --color-accent below. This is
+         the "have I looked at this" channel.
+       - diff additions/deletions -> stay hardcoded green/red below
+         (--code-diff-add-marker etc.), never wired to --color-accent. This
+         is the "what changed" channel, kept on the cross-tool green/red
+         convention the brief calls non-negotiable.
+     The two were previously the same hue (#22c55e for both), which is
+     exactly the ambiguity ("this line is new" vs "I've read this") the
+     brief flags as worth fixing -- they are now visually distinct colors,
+     not just distinct tokens. */
+  --color-accent: #d97757;        /* progress, read state, current selection */
+  --color-accent-fg: #1a0d05;     /* text on top of solid accent fill (dark warm brown -- white-on-accent measured 3.12:1, fails; this measures 6.09:1) */
+  --color-accent-wash: rgba(217, 119, 87, 0.12);
+  --color-accent-wash-strong: rgba(217, 119, 87, 0.32);
+  --color-destructive: #ef4444;   /* deletions, errors -- unchanged, still red */
   --color-destructive-wash: rgba(239, 68, 68, 0.12); /* diff del row tint */
-  --color-note: #eab308;          /* comments / attention (amber, distinct from accent) */
+  --color-note: #eab308;          /* comments / attention -- unchanged amber, still hue-distinct from the new orange accent */
   --color-note-wash: rgba(234, 179, 8, 0.12);
 
   /* -- change-point status rail: four states, addendum 4.4 -- */
@@ -98,16 +123,25 @@
   --color-rail-current-read: var(--color-accent);
 
   /* -- focus -- */
-  --color-focus-ring: #22c55e;
+  --color-focus-ring: #d97757;
 
   /* -- code token colors (kept semantic so Prism composites on tokens,     */
-  /*    not backgrounds -- see diff row rules further down) -- */
-  --code-fg: #e2e8f0;
+  /*    not backgrounds -- see diff row rules further down) --             */
+  /*    code-fg intentionally equals color-fg (see --code-bg comment       */
+  /*    below); keyword/function/number/string carried over from the old   */
+  /*    default unchanged -- re-verified against the new backdrop below,   */
+  /*    all still clear 6.2:1+ on every row background. code-comment is    */
+  /*    the one token that actually changes: the old #64748b measured      */
+  /*    3.69:1 on this new bg (would have repeated the exact Nord/One Dark/ */
+  /*    Dracula comment-contrast failure the brief calls out), replaced    */
+  /*    with the same hex as --color-fg-muted, which measures 5.4-6.3:1    */
+  /*    across unchanged/added/removed -- see dev-log contrast table. */
+  --code-fg: #f2efe9;
   --code-keyword: #c792ea;
   --code-function: #82aaff;
   --code-number: #f78c6c;
   --code-string: #c3e88d;
-  --code-comment: #64748b;
+  --code-comment: #9f9b93;
 
   /* -- diff row tint + marker, code-theme-scoped --
      Deliberately separate from --color-accent(-wash)/--color-destructive(-wash)
@@ -117,9 +151,26 @@
      default to today's values so the "default" code theme -- the unset/
      [data-code-theme="default"] case -- renders pixel-identical to before
      this unit. Each :root[data-code-theme="..."] block further down
-     overrides only these four plus the five --code-* tokens above. */
-  --code-diff-add-bg: rgba(34, 197, 94, 0.12);
-  --code-diff-del-bg: rgba(239, 68, 68, 0.12);
+     overrides only these four plus the five --code-* tokens above.
+
+     Opacity lowered from 0.12 to 0.10 for this theme specifically -- brief:
+     "現行 diff 底色透明度...是否需要調低" -- our own tint is free to tune,
+     unlike a published palette. 0.10 still reads clearly as add/del at a
+     glance (confirmed by screenshot) and buys the comment token consistent
+     5.4:1+ margin instead of running close to the 4.5 floor.
+
+     Add/del opacity is deliberately asymmetric (0.16 vs 0.10), not a copy-
+     paste oversight: at equal opacity, green and red composite to nearly
+     identical luminance/saturation deltas from this neutral bg (measured:
+     0.0101 vs 0.0058 luminance delta, green actually *larger*), yet a
+     real screenshot still read as "added lines look weak next to removed
+     lines" -- warm hues (red) advance and cool hues (green) recede
+     perceptually even at equal or higher contrast, so equal-opacity does
+     not mean equal-presence here. Green's opacity is raised until the two
+     rows read as equally strong by eye (confirmed by screenshot), not by
+     equalizing a luminance formula that already said they were even. */
+  --code-diff-add-bg: rgba(34, 197, 94, 0.16);
+  --code-diff-del-bg: rgba(239, 68, 68, 0.10);
   --code-diff-add-marker: #22c55e;
   --code-diff-del-marker: #ef4444;
 
@@ -155,41 +206,55 @@
   --transition-normal: 200ms ease;
 }
 
+/* Light mapping for the "Claude Code" default theme -- same neutral-grey/
+   terracotta-accent direction as the dark :root block above, just inverted
+   in lightness. --color-note nudged from the old #b45309 to a more overtly
+   gold/olive #854d0e specifically because the old value and the new rust
+   accent (#a8532f) sit close enough in hue to blur together on a light
+   background where saturation differences read less clearly than on dark;
+   the two were comfortably distinct back when accent was green. Contrast
+   table for every token against unchanged/added/removed row backgrounds is
+   in the dev-log -- keyword/function/number/string were also darkened one
+   step here (e.g. #9333ea -> #7e22ce) because measuring them against this
+   theme's own tinted rows (not just the flat page background, which is all
+   the original values were ever checked against) turned up the same
+   failure class the brief warns about: 4.11-4.49:1 on added/removed rows,
+   under the 4.5 floor. */
 @media (prefers-color-scheme: light) {
   :root {
-    --color-bg: #f7f8f8;
+    --color-bg: #f7f6f4;
     --color-panel: #ffffff;
-    --color-surface: #eef0f2;
-    --color-track: #e2e5e8;
+    --color-surface: #efeeeb;
+    --color-track: #e6e4e0;
 
-    --color-border: #dfe3e5;
-    --color-border-strong: #c3c9ce;
+    --color-border: #ddd9d4;
+    --color-border-strong: #bcb7b0;
 
-    --color-fg: #101418;
-    --color-fg-dim: #3d474f;
-    --color-fg-muted: #5b6771;
-    --color-fg-faint: #78838c;
-    --color-fg-ghost: #a4acb3;
+    --color-fg: #201d1a;
+    --color-fg-dim: #45413c;
+    --color-fg-muted: #6b665f;
+    --color-fg-faint: #8f8a82;
+    --color-fg-ghost: #b6b1a8;
 
-    --color-accent: #16a34a;
+    --color-accent: #a8532f;
     --color-accent-fg: #ffffff;
-    --color-accent-wash: rgba(22, 163, 74, 0.12);
-    --color-accent-wash-strong: rgba(22, 163, 74, 0.28);
+    --color-accent-wash: rgba(168, 83, 47, 0.12);
+    --color-accent-wash-strong: rgba(168, 83, 47, 0.28);
     --color-destructive: #dc2626;
     --color-destructive-wash: rgba(220, 38, 38, 0.1);
-    --color-note: #b45309;
-    --color-note-wash: rgba(180, 83, 9, 0.1);
+    --color-note: #854d0e;
+    --color-note-wash: rgba(133, 77, 14, 0.1);
 
-    --color-focus-ring: #16a34a;
+    --color-focus-ring: #a8532f;
 
-    --code-fg: #1b1f23;
-    --code-keyword: #9333ea;
-    --code-function: #2563eb;
-    --code-number: #c2410c;
-    --code-string: #15803d;
-    --code-comment: #78838c;
+    --code-fg: #201d1a;
+    --code-keyword: #7e22ce;
+    --code-function: #1d4ed8;
+    --code-number: #9a3412;
+    --code-string: #166534;
+    --code-comment: #5b564f;
 
-    --code-diff-add-bg: rgba(22, 163, 74, 0.12);
+    --code-diff-add-bg: rgba(22, 163, 74, 0.1);
     --code-diff-del-bg: rgba(220, 38, 38, 0.1);
     --code-diff-add-marker: #16a34a;
     --code-diff-del-marker: #dc2626;
@@ -1160,6 +1225,63 @@ input[type="checkbox"]:checked::after {
 
 .diff-side-left {
   border-right: 1px solid var(--color-border);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Expand-above/below controls -- ui-expand-context unit.                  */
+/*                                                                          */
+/* Deliberately styled from the *code-theme* tokens (--code-*), not the    */
+/* shell tokens (--color-*): this bar sits directly inside the code area,   */
+/* immediately above/below diff rows painted with --code-bg/--code-fg, and  */
+/* needs to read correctly under all eight code themes, not just whichever  */
+/* one happens to be active when this was written. --code-empty-bg (already */
+/* used for the side-by-side "no line here" filler) doubles as this row's   */
+/* backdrop -- both are "this is not a code line" surfaces, same visual     */
+/* role, no new token needed. Full-width by default (ordinary block flow    */
+/* inside .diff-body, see app.js's buildExpandRow/renderChangePointContent) */
+/* so it reads as one continuous bar in unified mode and correctly spans    */
+/* *both* side-by-side columns without needing to live inside either one.  */
+/* ---------------------------------------------------------------------- */
+
+.diff-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.diff-expand-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: var(--code-empty-bg);
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.diff-expand-btn {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  color: var(--code-comment);
+  background: transparent;
+  border: 1px solid var(--color-border-strong);
+}
+
+.diff-expand-btn:hover {
+  color: var(--code-fg);
+  border-color: var(--color-accent);
+}
+
+.diff-expand-status {
+  color: var(--code-comment);
+  font-style: italic;
+}
+
+.diff-expand-row.error .diff-expand-status {
+  color: var(--color-destructive);
+  font-style: normal;
 }
 
 /* Neutralize the default Prism theme's translucent token backgrounds so

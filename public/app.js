@@ -162,6 +162,14 @@ const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repo: repoId, key }),
     }),
+  // ref must be the diff's *target* (appState.target: a real ref name or the
+  // literal 'WORKING_TREE') -- that is the version newStart/newEnd/lines are
+  // expressed in. Passing base here would silently show the wrong revision's
+  // code, which the brief calls out as worse than showing nothing.
+  getLines: (repoId, ref, path, start, end) =>
+    apiFetch(
+      `/api/lines?repo=${encodeURIComponent(repoId)}&ref=${encodeURIComponent(ref)}&path=${encodeURIComponent(path)}&start=${start}&end=${end}`,
+    ),
   exportReview: (repoId, base, target, format) =>
     apiFetch(
       `/api/export?repo=${encodeURIComponent(repoId)}&base=${encodeURIComponent(base)}&target=${encodeURIComponent(target)}&format=${encodeURIComponent(format)}`,
@@ -407,7 +415,7 @@ function setViewMode(mode) {
   // tree rebuild and not a refetch, so the main pane's scroll position
   // (and the tree/scroll-spy state) is untouched. See EXTENSION POINT 1.
   for (const entry of dom.changePoints.values()) {
-    renderChangePointContent(entry.changePoint, entry.contentEl);
+    renderChangePointContent(entry);
   }
 }
 
@@ -606,23 +614,56 @@ function renderFileNode(file) {
   dom.files.set(file.path, { file, badgeEl: badge, progressFillEl: progressFill, toggleBtn, childUl });
   treeRootEl.appendChild(li);
 
+  // Computed once per file, not per change point: which change point (if
+  // any) sits immediately before/after this one *by line number* in the
+  // file. This is deliberately independent of the function/group tree
+  // structure above -- expansion is about what the file itself looks like
+  // top to bottom, not about which function owns a change point -- so it is
+  // built from a flat, newStart-sorted view of every change point in the
+  // file. O(n log n) once per file at tree-render time, not per scroll/
+  // keystroke.
+  const neighborMap = buildChangePointNeighbors(file);
+
   file.groups.forEach((group, groupIdx) => {
     if (group.name === null) {
       // The file-level bucket: no extra tree level, its change points hang
       // directly under the file (this is how non-JS files render as two
       // levels instead of three -- see model.js).
       for (const changePoint of group.changePoints) {
-        renderChangePoint(changePoint, group, file, null, childUl);
+        renderChangePoint(changePoint, group, file, null, childUl, neighborMap);
       }
       return;
     }
 
     const groupKey = `${file.path}::g${groupIdx}`;
-    renderGroupNode(group, groupKey, file, childUl);
+    renderGroupNode(group, groupKey, file, childUl, neighborMap);
   });
 }
 
-function renderGroupNode(group, groupKey, file, parentUl) {
+// key -> { prev: ChangePoint|null, next: ChangePoint|null }, by newStart
+// order across the whole file (every group, not just one). "prev"/"next"
+// are the boundaries expansion is allowed to reach: the gap between a
+// change point and its neighbor is unmodified code by construction (if it
+// weren't, there would be a change point in between), so it is always safe
+// to pull as context.
+function buildChangePointNeighbors(file) {
+  const all = [];
+  for (const group of file.groups) {
+    for (const changePoint of group.changePoints) all.push(changePoint);
+  }
+  all.sort((a, b) => a.newStart - b.newStart);
+
+  const neighbors = new Map();
+  for (let i = 0; i < all.length; i++) {
+    neighbors.set(all[i].id, {
+      prev: i > 0 ? all[i - 1] : null,
+      next: i < all.length - 1 ? all[i + 1] : null,
+    });
+  }
+  return neighbors;
+}
+
+function renderGroupNode(group, groupKey, file, parentUl, neighborMap) {
   const li = createEl('li', { className: 'tree-group' });
   const row = createEl('div', { className: 'tree-row tree-group-row' });
 
@@ -651,7 +692,7 @@ function renderGroupNode(group, groupKey, file, parentUl) {
   parentUl.appendChild(li);
 
   for (const changePoint of group.changePoints) {
-    renderChangePoint(changePoint, group, file, groupKey, childUl);
+    renderChangePoint(changePoint, group, file, groupKey, childUl, neighborMap);
   }
 }
 
@@ -669,7 +710,7 @@ function toggleCollapse(collapseId, kind, id) {
   entry.toggleBtn.textContent = nowCollapsed ? '▸' : '▾';
 }
 
-function renderChangePoint(changePoint, group, file, groupKey, parentUl) {
+function renderChangePoint(changePoint, group, file, groupKey, parentUl, neighborMap) {
   const key = changePoint.id;
   const rangeLabel = `+${changePoint.newStart}..${changePoint.newEnd}`;
 
@@ -708,12 +749,39 @@ function renderChangePoint(changePoint, group, file, groupKey, parentUl) {
   container.classList.toggle('checked', changePoint.checked);
 
   const content = createEl('div', { className: 'changepoint-content' });
-  renderChangePointContent(changePoint, content);
   container.appendChild(content);
 
   changepointsRootEl.appendChild(container);
 
-  dom.changePoints.set(key, {
+  // --- expand-context state --------------------------------------------
+  // EXTENSION POINT (this unit): "expand above/below" pulls in the
+  // surrounding unmodified file content, GitHub/GitLab-style. aboveLimit/
+  // belowLimit are the farthest this change point is ever allowed to reach
+  // in each direction -- the neighboring change point's own edge (never
+  // cross into another change point's territory), or the literal top of
+  // the file above. belowLimit is `null` when there is no next change
+  // point in the file: the distance to the true end of the file is not
+  // knowable without asking the server (see runExpand/applyExpandResult),
+  // so unlike aboveLimit it cannot be filled in for free here.
+  //
+  // Ownership of the gap *between* two adjacent change points: it belongs
+  // exclusively to the earlier one's "below" side, never to the later one's
+  // "above" side too. Each of the two entries would otherwise compute the
+  // exact same [prev.newEnd+1 .. next.newStart-1] window independently
+  // (this entry's aboveLimit === the previous entry's belowLimit) and fetch
+  // it twice -- confirmed live while building this: the network log showed
+  // the identical `/api/lines?...start=6&end=10` request fire twice, once
+  // from each side. So a change point only ever gets a real "above" (button
+  // or auto-load) when it is the *first* in its file, i.e. there is no
+  // previous neighbor to have already claimed that space above it. Every
+  // other change point's aboveDone is forced true -- its upward gap is
+  // always the previous change point's "below" to offer instead.
+  const neighbor = (neighborMap && neighborMap.get(key)) || { prev: null, next: null };
+  const aboveLimit = neighbor.prev ? neighbor.prev.newEnd + 1 : 1;
+  const belowLimit = neighbor.next ? neighbor.next.newStart - 1 : null;
+  const isFirstInFile = !neighbor.prev;
+
+  const entry = {
     changePoint,
     group,
     file,
@@ -723,18 +791,67 @@ function renderChangePoint(changePoint, group, file, groupKey, parentUl) {
     rightContainer: container,
     rightCheckbox,
     contentEl: content,
-  });
+    expand: {
+      filePath: file.path,
+      aboveLimit,
+      belowLimit,
+      aboveLoaded: changePoint.newStart, // smallest line number currently shown
+      belowLoaded: changePoint.newEnd,   // largest line number currently shown
+      aboveLines: [],                    // loaded context, ascending, prepended
+      belowLines: [],                    // loaded context, ascending, appended
+      aboveDone: !isFirstInFile || changePoint.newStart - aboveLimit <= 0,
+      belowDone: belowLimit != null && belowLimit - changePoint.newEnd <= 0,
+      aboveLoading: false,
+      belowLoading: false,
+      aboveError: null,
+      belowError: null,
+    },
+  };
+
+  dom.changePoints.set(key, entry);
   appState.order.push(key);
+
+  renderChangePointContent(entry);
+
+  // Small gaps read worse behind a click than just shown (brief: "collapsing
+  // a three-line gap behind a click is worse than just showing it"), so
+  // anything within EXPAND_AUTO_THRESHOLD lines of a neighbor -- or of the
+  // top of the file, which is knowable for free -- loads immediately instead
+  // of waiting for a click. The bottom-of-file case is deliberately excluded:
+  // whether that gap is small is unknowable without a request (see belowLimit
+  // above), so the last change point in a file always gets a real button,
+  // never a silent auto-load. "above" is further gated on isFirstInFile per
+  // the ownership rule above -- otherwise this re-triggers the exact
+  // duplicate-fetch bug that rule exists to prevent.
+  if (isFirstInFile) {
+    const aboveGap = changePoint.newStart - aboveLimit;
+    if (aboveGap > 0 && aboveGap <= EXPAND_AUTO_THRESHOLD) {
+      runExpand(entry, 'above');
+    }
+  }
+  if (belowLimit != null) {
+    const belowGap = belowLimit - changePoint.newEnd;
+    if (belowGap > 0 && belowGap <= EXPAND_AUTO_THRESHOLD) {
+      runExpand(entry, 'below');
+    }
+  }
 }
 
 // ===========================================================================
 // EXTENSION POINT 1 -- render a single change point's content area.
 //
-// Reads appState.viewMode to pick unified vs. side-by-side. Signature stays
-// stable: (changePoint, contentEl) -> void, contentEl already appended to
-// the DOM. Called both from renderChangePoint() (initial render) and from
-// setViewMode() (re-render in place on mode switch -- no refetch, no
-// scroll reset).
+// Reads appState.viewMode to pick unified vs. side-by-side. Signature
+// changed by the ui-expand-context unit: (entry) -> void, reading
+// entry.contentEl (already appended to the DOM) and entry.expand (the
+// per-change-point expand-above/below state added below). It used to be
+// (changePoint, contentEl) -- widened to the whole dom.changePoints entry
+// because expansion needs entry.expand, which only exists per-entry, not on
+// the changePoint object itself (that object is shared with server state,
+// see the comment on the next block, and must not gain ad-hoc UI fields).
+// Called from renderChangePoint() (initial render), setViewMode()
+// (re-render in place on mode switch), and runExpand() (re-render in place
+// after an expand-above/below fetch starts/finishes) -- never a refetch,
+// never a scroll reset, in all three cases.
 //
 // Security: diff content comes from the reviewed repo and may contain
 // anything, including literal HTML. Every path below writes text via
@@ -743,7 +860,10 @@ function renderChangePoint(changePoint, group, file, groupKey, parentUl) {
 // Prism.highlight(text, grammar, lang) -- Prism's tokenizer HTML-escapes
 // the source text itself before wrapping matched tokens in spans, so the
 // result is always safe markup. Raw `line.text` is never assigned to
-// innerHTML anywhere.
+// innerHTML anywhere. Lines fetched via GET /api/lines for expansion go
+// through the exact same buildCodeSpan()/buildUnifiedRow()/
+// buildSideBySideRow() path as the diff's own lines -- no second rendering
+// path, no second security story to keep in sync.
 // ===========================================================================
 
 // Line objects come from git.js and are shared by reference with server
@@ -798,26 +918,49 @@ function diffRowTypeClass(type) {
   return 'ctx';
 }
 
-function renderChangePointContent(changePoint, contentEl) {
+function renderChangePointContent(entry) {
+  const { changePoint, contentEl, expand } = entry;
   contentEl.textContent = '';
+
+  const lang = getPrismLanguage(changePoint.filePath);
+  // Loaded context is just more Line-like objects, spliced in ahead of/
+  // behind the diff's own lines -- everything downstream (pairing for
+  // side-by-side, row building, Prism highlighting) treats them exactly
+  // like the lines the diff itself produced. This is what keeps expanded
+  // context lined up column-for-column with the diff rows around it: it is
+  // the *same* row-building code, not a lookalike.
+  const allLines = [...expand.aboveLines, ...changePoint.lines, ...expand.belowLines];
+
+  const body = createEl('div', { className: 'diff-body' });
+  const aboveRow = buildExpandRow(entry, 'above');
+  if (aboveRow) body.appendChild(aboveRow);
+
   if (appState.viewMode === 'side-by-side') {
-    renderSideBySide(changePoint, contentEl);
+    body.appendChild(buildSideBySideDiff(allLines, lang));
   } else {
-    renderUnified(changePoint, contentEl);
+    body.appendChild(buildUnifiedDiff(allLines, lang));
   }
+
+  const belowRow = buildExpandRow(entry, 'below');
+  if (belowRow) body.appendChild(belowRow);
+
+  contentEl.appendChild(body);
 }
 
 // ---------------------------------------------------------------------------
 // Unified: one row per line, old-line# | new-line# | marker | code.
 // ---------------------------------------------------------------------------
 
-function renderUnified(changePoint, contentEl) {
-  const lang = getPrismLanguage(changePoint.filePath);
+// Renamed from renderUnified(changePoint, contentEl): now takes the combined
+// [...context-above, ...diff lines, ...context-below] array built by
+// renderChangePointContent and returns the element instead of appending it
+// directly, so the caller can place expand-above/below rows around it.
+function buildUnifiedDiff(lines, lang) {
   const container = createEl('div', { className: 'diff-unified' });
-  for (const line of changePoint.lines) {
+  for (const line of lines) {
     container.appendChild(buildUnifiedRow(line, lang));
   }
-  contentEl.appendChild(container);
+  return container;
 }
 
 function buildUnifiedRow(line, lang) {
@@ -901,9 +1044,10 @@ function pairLinesForSideBySide(lines) {
   return rows;
 }
 
-function renderSideBySide(changePoint, contentEl) {
-  const lang = getPrismLanguage(changePoint.filePath);
-  const rows = pairLinesForSideBySide(changePoint.lines);
+// Renamed from renderSideBySide(changePoint, contentEl) for the same reason
+// as buildUnifiedDiff above.
+function buildSideBySideDiff(lines, lang) {
+  const rows = pairLinesForSideBySide(lines);
 
   const container = createEl('div', { className: 'diff-sidebyside' });
   const leftCol = createEl('div', { className: 'diff-side diff-side-left' });
@@ -915,7 +1059,7 @@ function renderSideBySide(changePoint, contentEl) {
   }
 
   container.append(leftCol, rightCol);
-  contentEl.appendChild(container);
+  return container;
 }
 
 function buildSideBySideRow(line, lang, side) {
@@ -936,6 +1080,198 @@ function buildSideBySideRow(line, lang, side) {
   const code = createEl('span', { className: 'diff-code' });
   code.appendChild(buildCodeSpan(line.text, lang));
   row.appendChild(code);
+  return row;
+}
+
+// ===========================================================================
+// Expand context above/below a change point -- GET /api/lines, GitHub/GitLab-
+// style. Reads like the file itself around each diff block, without turning
+// the surrounding unmodified code into checkable/commentable change points:
+// everything loaded here lives only in entry.expand.{above,below}Lines and is
+// spliced into the *rendered* line list in renderChangePointContent -- it
+// never touches changePoint.lines, appState.order, group/file totals, or the
+// scroll-spy's observed targets (still one per change point, see
+// setupScrollSpy). j/k/u/checked-count/progress-rail are therefore
+// untouched by construction, not by care taken here.
+//
+// Two lines control the whole feature:
+//   EXPAND_REQUEST_CAP    -- max lines pulled in one request (mirrors the
+//                            server's own MAX_LINES_PER_REQUEST, so a single
+//                            click reveals the *entire* remaining gap to the
+//                            neighboring change point whenever that gap fits
+//                            in one request -- which covers the vast
+//                            majority of real diffs. Only a gap wider than
+//                            2000 lines needs a second click, and it repeats
+//                            in further 2000-line chunks after that).
+//   EXPAND_AUTO_THRESHOLD -- gaps this small or smaller (to a neighboring
+//                            change point, or to the top of the file) render
+//                            immediately with no button at all, because a
+//                            handful of lines is not worth a click (brief:
+//                            "collapsing a three-line gap behind a click is
+//                            worse than just showing it"). 8 is double
+//                            GitHub's own 3-line default merge context --
+//                            enough to absorb the common one-or-two-line
+//                            gap between adjacent hunks with room to spare,
+//                            without silently pre-loading anything a user
+//                            would call "a real expand".
+const EXPAND_REQUEST_CAP = 2000;
+const EXPAND_AUTO_THRESHOLD = 8;
+
+// GET /api/lines returns { n, text } pairs -- n is the target-ref line
+// number, which is all an expansion request can honestly claim. It is NOT
+// converted into an oldLine guess: the old/new line numbers only stay in
+// lockstep while no diff activity has occurred, and re-deriving that offset
+// from unrelated hunk data risks being *wrong* rather than merely absent --
+// exactly the failure mode the brief warns is worse than showing nothing.
+// So expanded rows show a populated "new" gutter and a blank "old" gutter,
+// same as any other line this app can't attribute an old-side number to.
+function toContextLine(line) {
+  return { type: ' ', oldLine: null, newLine: line.n, text: line.text };
+}
+
+// Range to request for one expand click/auto-load, always <=
+// EXPAND_REQUEST_CAP lines and always clamped to this change point's
+// aboveLimit/belowLimit so it can never cross into a neighboring change
+// point's own territory.
+function computeExpandRange(entry, direction) {
+  const state = entry.expand;
+  if (direction === 'above') {
+    const requestEnd = state.aboveLoaded - 1;
+    const requestStart = Math.max(state.aboveLimit, requestEnd - EXPAND_REQUEST_CAP + 1);
+    return { requestStart, requestEnd };
+  }
+  const requestStart = state.belowLoaded + 1;
+  const requestEnd =
+    state.belowLimit != null
+      ? Math.min(state.belowLimit, requestStart + EXPAND_REQUEST_CAP - 1)
+      : requestStart + EXPAND_REQUEST_CAP - 1; // unbounded: server clamps to totalLines
+  return { requestStart, requestEnd };
+}
+
+// Merges a successful GET /api/lines response into entry.expand. Filters to
+// only genuinely new lines (rather than trusting the request bounds blindly)
+// specifically to guard the EOF case: a change point whose newEnd already
+// *is* the last line of the file has no lines left below it, but asking for
+// "belowLoaded+1 .. belowLoaded+2000" against a file that short still gets a
+// 200 back (the server clamps start down to totalLines rather than
+// rejecting -- see /api/lines' clamping contract), which would otherwise
+// silently re-append the last line as a duplicate and leave the button
+// clickable forever. Filtering by n and checking for zero new lines catches
+// that instead of trusting the response's own start/end.
+function applyExpandResult(entry, direction, data) {
+  const state = entry.expand;
+  if (direction === 'above') {
+    const newLines = data.lines.filter((l) => l.n < state.aboveLoaded).map(toContextLine);
+    if (newLines.length === 0) {
+      state.aboveDone = true;
+      return;
+    }
+    state.aboveLines = [...newLines, ...state.aboveLines];
+    state.aboveLoaded = newLines[0].newLine;
+    if (state.aboveLoaded <= state.aboveLimit) state.aboveDone = true;
+    return;
+  }
+
+  const newLines = data.lines.filter((l) => l.n > state.belowLoaded).map(toContextLine);
+  if (newLines.length === 0) {
+    state.belowDone = true;
+    return;
+  }
+  state.belowLines = [...state.belowLines, ...newLines];
+  state.belowLoaded = newLines[newLines.length - 1].newLine;
+  if (state.belowLimit != null) {
+    if (state.belowLoaded >= state.belowLimit) state.belowDone = true;
+  } else if (data.totalLines <= state.belowLoaded) {
+    state.belowDone = true; // reached the true end of the file
+  }
+}
+
+// Fires a GET /api/lines for one direction and re-renders this one change
+// point's content in place at each state change (start loading, success,
+// error) -- the same "no refetch, no scroll reset" discipline as
+// onToggleCheck/saveComment elsewhere in this file, just scoped to a single
+// change point's content instead of the tree. ref is read live from
+// appState.target (the diff's target -- see api.getLines' own comment for
+// why base would be wrong) rather than frozen at entry-creation time, same
+// as every other API call in this file; a change point entry only survives
+// until the next tree rebuild anyway (renderTree clears dom.changePoints).
+async function runExpand(entry, direction) {
+  const state = entry.expand;
+  const loadingKey = direction === 'above' ? 'aboveLoading' : 'belowLoading';
+  const doneKey = direction === 'above' ? 'aboveDone' : 'belowDone';
+  const errorKey = direction === 'above' ? 'aboveError' : 'belowError';
+
+  if (state[loadingKey] || state[doneKey]) return;
+
+  state[loadingKey] = true;
+  state[errorKey] = null;
+  renderChangePointContent(entry);
+
+  try {
+    const { requestStart, requestEnd } = computeExpandRange(entry, direction);
+    const data = await api.getLines(appState.repo, appState.target, state.filePath, requestStart, requestEnd);
+    applyExpandResult(entry, direction, data);
+  } catch (err) {
+    state[errorKey] = err.message;
+  } finally {
+    state[loadingKey] = false;
+    renderChangePointContent(entry);
+  }
+}
+
+// Builds the expand-above/below control for one side of one change point, or
+// returns null to render nothing on that side (fully expanded already, or
+// there was never a gap there to begin with -- e.g. the very first change
+// point in a file starting at line 1). Three mutually exclusive states:
+// loading / error (with retry) / a real "expand N lines" button.
+function buildExpandRow(entry, direction) {
+  const state = entry.expand;
+  const done = direction === 'above' ? state.aboveDone : state.belowDone;
+  if (done) return null;
+
+  const loading = direction === 'above' ? state.aboveLoading : state.belowLoading;
+  const error = direction === 'above' ? state.aboveError : state.belowError;
+
+  const row = createEl('div', { className: `diff-expand-row diff-expand-${direction}` });
+
+  if (loading) {
+    row.classList.add('loading');
+    row.appendChild(createEl('span', { className: 'diff-expand-status', text: 'Loading context…' }));
+    return row;
+  }
+
+  if (error) {
+    row.classList.add('error');
+    row.appendChild(createEl('span', { className: 'diff-expand-status diff-expand-error', text: error }));
+    const retryBtn = createEl('button', { className: 'diff-expand-btn', text: 'Retry' });
+    retryBtn.type = 'button';
+    retryBtn.addEventListener('click', () => runExpand(entry, direction));
+    row.appendChild(retryBtn);
+    return row;
+  }
+
+  const loaded = direction === 'above' ? state.aboveLoaded : state.belowLoaded;
+  const limit = direction === 'above' ? state.aboveLimit : state.belowLimit;
+  let label;
+  if (limit == null) {
+    // Only reachable for "below" on the last change point in a file: the
+    // true distance to end-of-file isn't known until asked (see belowLimit
+    // in renderChangePoint), so the count can't be shown up front.
+    label = 'Show more below ▾';
+  } else {
+    const remaining = direction === 'above' ? loaded - limit : limit - loaded;
+    const chunk = Math.min(remaining, EXPAND_REQUEST_CAP);
+    const plural = chunk === 1 ? '' : 's';
+    label =
+      direction === 'above'
+        ? `▴ Show ${chunk} line${plural} above`
+        : `Show ${chunk} line${plural} below ▾`;
+  }
+
+  const btn = createEl('button', { className: 'diff-expand-btn', text: label });
+  btn.type = 'button';
+  btn.addEventListener('click', () => runExpand(entry, direction));
+  row.appendChild(btn);
   return row;
 }
 
