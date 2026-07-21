@@ -8,7 +8,7 @@
 // runGapExpand() re-renders a change point's content in place after a fetch
 // (calling straight back into renderChangePointContent), and
 // renderChangePointContent() builds the gap rows around it (calling into
-// buildGapAboveRow/buildGapBelowRow) -- each direction needs the other,
+// buildGapAboveSegments/buildGapBelowRow) -- each direction needs the other,
 // which is exactly the "two modules import each other" cycle the brief
 // calls out as a sign the seam is in the wrong place. Kept together here
 // instead: one coherent responsibility ("how a change point's body renders,
@@ -100,21 +100,31 @@ function diffRowTypeClass(type) {
 }
 
 // Builds the ordered list of render segments for one change point: any
-// loaded gap-above context, the gap-above control row (if that gap still
-// has unloaded lines), the change point's own diff lines, then any loaded
-// gap-below context and its control row. Adjacent `lines` segments are
-// merged into one array before rendering so a fully-loaded gap (or a gap
-// whose control row has already disappeared on one side) reads as a single
-// seamless diff block -- exactly like the change point's own lines always
-// have -- instead of an arbitrary seam wherever this function happened to
-// push a new array.
+// loaded gap-above context, then that gap's control element(s) -- placed at
+// the boundary each one actually operates on, see buildGapAboveSegments --
+// the change point's own diff lines, then any loaded gap-below context and
+// its control row. Adjacent `lines` segments are merged into one array
+// before rendering so a fully-loaded gap (or a gap whose control row has
+// already disappeared on one side) reads as a single seamless diff block --
+// exactly like the change point's own lines always have -- instead of an
+// arbitrary seam wherever this function happened to push a new array.
 function buildSegments(entry) {
   const { changePoint, gapAbove, gapBelow } = entry;
   const raw = [];
 
   if (gapAbove) {
+    // down/mid/up map onto three possible positions within the gap, not
+    // three rows that always coexist -- see buildGapAboveSegments for which
+    // combination applies. `down` sits right where gapAbove.topLines stops
+    // (i.e. flush under whatever is above this gap), `up` sits right where
+    // gapAbove.bottomLines starts (flush above this change point), and
+    // `mid` sits between them regardless of whether one or both of the
+    // others are present.
+    const segs = buildGapAboveSegments(entry);
     if (gapAbove.topLines.length) raw.push({ type: 'lines', lines: gapAbove.topLines });
-    if (gapRemaining(gapAbove) > 0) raw.push({ type: 'gapAbove' });
+    if (segs?.down) raw.push({ type: 'el', el: segs.down });
+    if (segs?.mid) raw.push({ type: 'el', el: segs.mid });
+    if (segs?.up) raw.push({ type: 'el', el: segs.up });
     if (gapAbove.bottomLines.length) raw.push({ type: 'lines', lines: gapAbove.bottomLines });
   }
 
@@ -122,7 +132,8 @@ function buildSegments(entry) {
 
   if (gapBelow) {
     if (gapBelow.topLines.length) raw.push({ type: 'lines', lines: gapBelow.topLines });
-    if (gapRemaining(gapBelow) > 0) raw.push({ type: 'gapBelow' });
+    const el = buildGapBelowRow(entry);
+    if (el) raw.push({ type: 'el', el });
   }
 
   const merged = [];
@@ -154,10 +165,8 @@ export function renderChangePointContent(entry) {
           ? buildSideBySideDiff(segment.lines, lang)
           : buildUnifiedDiff(segment.lines, lang),
       );
-    } else if (segment.type === 'gapAbove') {
-      body.appendChild(buildGapAboveRow(entry));
     } else {
-      body.appendChild(buildGapBelowRow(entry));
+      body.appendChild(segment.el);
     }
   }
 
@@ -430,6 +439,51 @@ export const EXPAND_STEP = 20;
 export const EXPAND_REQUEST_CAP = 2000;
 export const EXPAND_AUTO_THRESHOLD = 8;
 
+// -- Where each control sits (ui-expand-layout unit) ------------------------
+// The complaint this addresses: "上下20會放在一起，這樣很不直覺" -- both
+// directional buttons used to render together in the middle of the gap, so
+// reading which one did what meant reading the arrow glyph, not the
+// position. Position now carries the meaning instead:
+//
+//   [change point A]
+//   [↓ 20 行]          <- flush under A: grows gapAbove.topLines downward
+//        (全部, if room)
+//   [↑ 20 行]          <- flush above B: grows gapAbove.bottomLines upward
+//   [change point B]
+//
+// buildGapAboveSegments() below returns up to three elements keyed by where
+// they go -- `down` (right after whatever gapAbove.topLines is already
+// loaded), `mid` (between the two), and `up` (right before whatever
+// gapAbove.bottomLines is already loaded) -- and buildSegments() (above)
+// splices them into exactly those slots. Because the slot is recomputed
+// from gap.topLines/gap.bottomLines on every render, a partial expansion
+// naturally moves each control to the new boundary it now operates on --
+// there is no separately-tracked "where did I draw this button last time"
+// to fall out of sync.
+//
+// "全部（N 行）" is direction-agnostic (it doesn't grow one frontier over the
+// other, it just fills whatever is left), so it belongs at `mid` -- between
+// the two directional controls it complements, not glued to either one.
+// Below EXPAND_STEP remaining, though, `down` and `up` would produce the
+// *identical* visible result (a click on either fully closes the gap, see
+// runGapExpand/computeGapRange's request math), so showing two buttons
+// that do the same thing is worse than showing one: buildGapAboveSegments
+// collapses to a single `mid` control at that point, and it keeps the
+// "全部（N 行）" wording (never "剩 N 行" split across two redundant
+// buttons) since that is exactly what it does. This reuses EXPAND_STEP
+// (20) as the threshold rather than inventing a second magic number -- it
+// is already the exact point past which one directional click empties the
+// gap, which is the real reason two directional buttons stop making sense.
+//
+// A 9-19 line gap (the smallest that ever reaches this code -- 8 and under
+// auto-load, see EXPAND_AUTO_THRESHOLD) therefore draws exactly one control
+// row, never two stacked ones: two ~29px chrome bars around a 9-line gap
+// would rival or dwarf the content they are hiding, on top of offering a
+// meaningless choice. The EOF gapBelow row is untouched by any of this: it
+// only ever had one direction and already rendered flush under the change
+// point it belongs to (there is nothing above it to be "flush against"
+// instead), so its layout was never the problem this addresses.
+
 // Builds a gap's state, or null if there is no gap (the two edges are flush
 // -- e.g. a change point starting at line 1, or two change points with no
 // unmodified line between them). `bottom` is null for the one unbounded
@@ -480,7 +534,7 @@ function toContextLine(line) {
 
 // Range to request for one direction of one gap. `wanted` is how many lines
 // this particular click is asking for -- EXPAND_STEP for a primary button,
-// the true remaining count for "expand all" (see buildGapAboveRow) -- and
+// the true remaining count for "expand all" (see buildGapAboveSegments) -- and
 // is always further clamped to EXPAND_REQUEST_CAP (the server rejects
 // anything larger, see MAX_LINES_PER_REQUEST in server.js) and to the
 // opposite frontier, so a request can never cross into lines the other
@@ -551,7 +605,7 @@ function applyGapResult(gap, direction, data) {
 // `wanted` is how many lines this click asked for -- defaults to
 // EXPAND_REQUEST_CAP for the auto-load call site in pane.js's
 // renderChangePoint (small gaps only, always well under the cap either
-// way) and is passed explicitly by buildGapAboveRow/buildGapBelowRow's
+// way) and is passed explicitly by buildGapAboveSegments/buildGapBelowRow's
 // primary/all/retry buttons. It is only a request, not a promise:
 // computeGapRange still clamps it to EXPAND_REQUEST_CAP and to the
 // opposite frontier, and applyGapResult still filters the response down to
@@ -579,123 +633,114 @@ export async function runGapExpand(entry, gap, direction, wanted = EXPAND_REQUES
   }
 }
 
-// Builds the control row for the gap immediately above a change point, or
-// returns null if there is nothing to show (no gap at all, or it's already
-// fully loaded -- see gapRemaining). Three mutually exclusive states:
-// loading / error (with retry) / a real button row.
-//
-// The button row shows BOTH directions at once, in Traditional Chinese to
-// match the rest of the UI (footer hint bar, export buttons):
-//   "↑ 20 行"  -- grows the bottom-anchored frontier upward, revealing the
-//                 lines immediately above the change point first. This is
-//                 the direction the previous single-owner design couldn't
-//                 offer on anything but the first change point in a file.
-//   "↓ 20 行"  -- grows the top-anchored frontier downward, revealing the
-//                 lines immediately below the previous change point (or
-//                 below line 1) first.
-//   "全部（58 行）" -- fills the whole remaining gap (in EXPAND_REQUEST_CAP
-//                 chunks if needed), dropped once remaining < EXPAND_STEP
-//                 because either directional button already clears the
-//                 whole gap in one click at that point.
-// When remaining < EXPAND_STEP, both directional buttons show the true
-// remainder instead of promising 20 (e.g. "↑ 剩 7 行"), independently for
-// each direction, since either one might be the one the user reaches for.
-function buildGapAboveRow(entry) {
+// A full-width chrome bar wrapping one primary button -- the shape shared
+// by every directional control (down, up, the small-gap combined control,
+// and gapBelow's single button).
+function buildPrimaryRow(extraClass, label, onClick) {
+  const row = createEl('div', { className: `diff-expand-row ${extraClass}` });
+  const controls = createEl('div', { className: 'diff-expand-controls' });
+  const btn = createEl('button', { className: 'diff-expand-btn diff-expand-btn-primary', text: label });
+  btn.type = 'button';
+  btn.addEventListener('click', onClick);
+  controls.appendChild(btn);
+  row.appendChild(controls);
+  return row;
+}
+
+// Loading/error states are transient and gap-wide (only one fetch is ever
+// in flight for a gap, see gap.loading's block comment above), so both
+// render at `mid` regardless of which direction is actually pending --
+// there is no stable "which edge is this for" to point at while it's still
+// in flight, and the buttons themselves simply disappear for the moment
+// instead of claiming to still be clickable.
+function buildLoadingRow(extraClass) {
+  const row = createEl('div', { className: `diff-expand-row loading${extraClass ? ` ${extraClass}` : ''}` });
+  row.appendChild(createEl('span', { className: 'diff-expand-status', text: '載入中…' }));
+  return row;
+}
+
+function buildErrorRow(entry, gap, direction, extraClass) {
+  const row = createEl('div', { className: `diff-expand-row error${extraClass ? ` ${extraClass}` : ''}` });
+  row.appendChild(createEl('span', { className: 'diff-expand-status diff-expand-error', text: gap.error }));
+  const retryBtn = createEl('button', { className: 'diff-expand-btn diff-expand-btn-primary', text: '重試' });
+  retryBtn.type = 'button';
+  retryBtn.addEventListener('click', () =>
+    runGapExpand(entry, gap, direction, gap.pendingWanted ?? EXPAND_REQUEST_CAP),
+  );
+  row.appendChild(retryBtn);
+  return row;
+}
+
+// Builds the up-to-three control elements for the gap immediately above a
+// change point, keyed by the slot buildSegments() should splice each one
+// into (`down` / `mid` / `up` -- see the block comment above EXPAND_STEP).
+// Returns null if there is nothing to show at all (no gap, or already
+// fully loaded -- see gapRemaining).
+function buildGapAboveSegments(entry) {
   const gap = entry.gapAbove;
   if (!gap || gapRemaining(gap) <= 0) return null;
 
-  const row = createEl('div', { className: 'diff-expand-row diff-expand-above' });
-
-  if (gap.loading) {
-    row.classList.add('loading');
-    row.appendChild(createEl('span', { className: 'diff-expand-status', text: '載入中…' }));
-    return row;
-  }
-
-  if (gap.error) {
-    row.classList.add('error');
-    row.appendChild(createEl('span', { className: 'diff-expand-status diff-expand-error', text: gap.error }));
-    const retryBtn = createEl('button', { className: 'diff-expand-btn diff-expand-btn-primary', text: '重試' });
-    retryBtn.type = 'button';
-    retryBtn.addEventListener('click', () =>
-      runGapExpand(entry, gap, gap.pendingDirection, gap.pendingWanted ?? EXPAND_REQUEST_CAP),
-    );
-    row.appendChild(retryBtn);
-    return row;
-  }
+  if (gap.loading) return { mid: buildLoadingRow() };
+  if (gap.error) return { mid: buildErrorRow(entry, gap, gap.pendingDirection ?? 'top') };
 
   const remaining = gapRemaining(gap);
-  const controls = createEl('div', { className: 'diff-expand-controls' });
 
-  const upBtn = createEl('button', {
-    className: 'diff-expand-btn diff-expand-btn-primary',
-    text: remaining < EXPAND_STEP ? `↑ 剩 ${remaining} 行` : `↑ ${EXPAND_STEP} 行`,
-  });
-  upBtn.type = 'button';
-  upBtn.addEventListener('click', () => runGapExpand(entry, gap, 'bottom', Math.min(EXPAND_STEP, remaining)));
-
-  const downBtn = createEl('button', {
-    className: 'diff-expand-btn diff-expand-btn-primary',
-    text: remaining < EXPAND_STEP ? `↓ 剩 ${remaining} 行` : `↓ ${EXPAND_STEP} 行`,
-  });
-  downBtn.type = 'button';
-  downBtn.addEventListener('click', () => runGapExpand(entry, gap, 'top', Math.min(EXPAND_STEP, remaining)));
-
-  controls.append(upBtn, downBtn);
-
-  if (remaining >= EXPAND_STEP) {
-    const allBtn = createEl('button', {
-      className: 'diff-expand-btn diff-expand-btn-all',
-      text: `全部（${remaining} 行）`,
-    });
-    allBtn.type = 'button';
-    allBtn.addEventListener('click', () => runGapExpand(entry, gap, 'top', remaining));
-    controls.appendChild(allBtn);
+  // Below EXPAND_STEP remaining, a click on EITHER direction requests
+  // exactly `remaining` lines and closes the gap -- same visible result
+  // either way (see runGapExpand/computeGapRange). Two buttons offering an
+  // identical outcome is a false choice, and two ~29px chrome bars around
+  // as few as 9 remaining lines would rival the content they hide (see the
+  // block comment above). One direction-agnostic control instead, still
+  // showing the real remainder rather than promising EXPAND_STEP.
+  if (remaining < EXPAND_STEP) {
+    return {
+      mid: buildPrimaryRow('diff-expand-combined', `全部（${remaining} 行）`, () =>
+        runGapExpand(entry, gap, 'top', remaining),
+      ),
+    };
   }
 
-  row.appendChild(controls);
-  return row;
+  const down = buildPrimaryRow('diff-expand-down', `↓ ${EXPAND_STEP} 行`, () =>
+    runGapExpand(entry, gap, 'top', EXPAND_STEP),
+  );
+  const up = buildPrimaryRow('diff-expand-up', `↑ ${EXPAND_STEP} 行`, () =>
+    runGapExpand(entry, gap, 'bottom', EXPAND_STEP),
+  );
+
+  // "全部" is direction-agnostic (fills whatever is left, in
+  // EXPAND_REQUEST_CAP chunks if needed, rather than growing one frontier
+  // over the other) -- it belongs between the two directional controls it
+  // complements, not glued to either one. Styled subtler than the
+  // directional buttons (see .diff-expand-mid / .diff-expand-btn-all) so it
+  // reads as "also available" rather than competing with them.
+  const mid = createEl('div', { className: 'diff-expand-mid' });
+  const allBtn = createEl('button', {
+    className: 'diff-expand-btn diff-expand-btn-all',
+    text: `全部（${remaining} 行）`,
+  });
+  allBtn.type = 'button';
+  allBtn.addEventListener('click', () => runGapExpand(entry, gap, 'top', remaining));
+  mid.appendChild(allBtn);
+
+  return { down, mid, up };
 }
 
 // Builds the control row for the EOF gap below a file's last change point,
 // or returns null if there is nothing to show (not the last change point,
 // or the gap already reached end-of-file). Same three states as
-// buildGapAboveRow, but only ever the single "↓" direction -- see the
-// gapBelow block comment above for why: the lower edge isn't knowable
-// without asking, so there is no count to show and no "expand all" to
-// offer, same as the original design's belowLimit === null branch.
+// buildGapAboveSegments, but only ever the single "↓" direction, and it was
+// already flush against the change point it belongs to before this unit --
+// see the gapBelow block comment above for why: the lower edge isn't
+// knowable without asking, so there is no count to show, no "expand all" to
+// offer, and nothing on the far side to be flush against instead.
 function buildGapBelowRow(entry) {
   const gap = entry.gapBelow;
   if (!gap || gapRemaining(gap) <= 0) return null;
 
-  const row = createEl('div', { className: 'diff-expand-row diff-expand-below' });
+  if (gap.loading) return buildLoadingRow('diff-expand-below');
+  if (gap.error) return buildErrorRow(entry, gap, 'top', 'diff-expand-below');
 
-  if (gap.loading) {
-    row.classList.add('loading');
-    row.appendChild(createEl('span', { className: 'diff-expand-status', text: '載入中…' }));
-    return row;
-  }
-
-  if (gap.error) {
-    row.classList.add('error');
-    row.appendChild(createEl('span', { className: 'diff-expand-status diff-expand-error', text: gap.error }));
-    const retryBtn = createEl('button', { className: 'diff-expand-btn diff-expand-btn-primary', text: '重試' });
-    retryBtn.type = 'button';
-    retryBtn.addEventListener('click', () =>
-      runGapExpand(entry, gap, 'top', gap.pendingWanted ?? EXPAND_REQUEST_CAP),
-    );
-    row.appendChild(retryBtn);
-    return row;
-  }
-
-  const controls = createEl('div', { className: 'diff-expand-controls' });
-  const primaryBtn = createEl('button', {
-    className: 'diff-expand-btn diff-expand-btn-primary',
-    text: `↓ ${EXPAND_STEP} 行`,
-  });
-  primaryBtn.type = 'button';
-  primaryBtn.addEventListener('click', () => runGapExpand(entry, gap, 'top', EXPAND_STEP));
-  controls.appendChild(primaryBtn);
-  row.appendChild(controls);
-  return row;
+  return buildPrimaryRow('diff-expand-below', `↓ ${EXPAND_STEP} 行`, () =>
+    runGapExpand(entry, gap, 'top', EXPAND_STEP),
+  );
 }

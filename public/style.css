@@ -1369,8 +1369,23 @@ input[type="checkbox"]:checked::after {
   color: var(--color-fg);
 }
 
+/* Now names the owning function/file (see buildChangePointHeaderLabel in
+ * pane.js) instead of a fixed-width line range, so unlike before it needs to
+ * be able to shrink alongside the checkbox this row shares space with --
+ * same flex/ellipsis recipe as .tree-label uses for the same reason. When
+ * the name is long enough to use buildFunctionLabel's own prefix/tail split
+ * (.tree-fn-label, reused as-is from tree.js/style.css), overflow: hidden
+ * here also supplies that inner split's automatic min-width: 0 per the
+ * flexbox spec (an item's automatic minimum is 0 once its own overflow
+ * isn't visible) -- see .tree-fn-prefix/.tree-fn-tail's own comments below
+ * for the rest of that mechanism. tabular-nums still matters here: the
+ * "(i/N)" ordinal suffix is digits. */
 .changepoint-label {
   font-variant-numeric: tabular-nums;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .changepoint-content {
@@ -1481,7 +1496,8 @@ input[type="checkbox"]:checked::after {
 }
 
 /* ---------------------------------------------------------------------- */
-/* Expand-above/below controls -- ui-expand-context unit.                  */
+/* Expand-above/below controls -- ui-expand-context / ui-expand-layout      */
+/* units.                                                                   */
 /*                                                                          */
 /* Deliberately styled from the *code-theme* tokens (--code-*), not the    */
 /* shell tokens (--color-*): this bar sits directly inside the code area,   */
@@ -1491,17 +1507,21 @@ input[type="checkbox"]:checked::after {
 /* used for the side-by-side "no line here" filler) doubles as this row's   */
 /* backdrop -- both are "this is not a code line" surfaces, same visual     */
 /* role, no new token needed. Full-width by default (ordinary block flow    */
-/* inside .diff-body, see diff.js's buildGapAboveRow/buildGapBelowRow/       */
+/* inside .diff-body, see diff.js's buildGapAboveSegments/buildGapBelowRow/  */
 /* renderChangePointContent) so it reads as one continuous bar in unified   */
 /* mode and correctly spans *both* side-by-side columns without needing to  */
 /* live inside either one.                                                  */
 /*                                                                          */
-/* .diff-expand-above is one shared row per GAP, not per change-point side  */
-/* (bidirectional-expand unit) -- it can show up to three controls at once  */
-/* (↑, ↓, 全部) where every other .diff-expand-row (.diff-expand-below, the */
-/* unbounded end-of-file case) only ever shows one, hence the flex-wrap     */
-/* below: three compact buttons fit on one line at ordinary widths, but     */
-/* shouldn't force horizontal overflow in a narrow side-by-side column.    */
+/* A gapAbove's controls are position-coded, not glyph-coded: "↓" always    */
+/* renders flush under whatever sits above the gap (.diff-expand-down) and  */
+/* "↑" always renders flush above the change point the gap belongs to       */
+/* (.diff-expand-up) -- see buildGapAboveSegments in diff.js. Each is its   */
+/* own full .diff-expand-row, same weight as .diff-expand-below (the        */
+/* single-direction end-of-file row) and the small-gap combined control     */
+/* (.diff-expand-combined, which reuses .diff-expand-down/up's visual       */
+/* weight because it is the sole control at that point, not a secondary     */
+/* one). "全部" is deliberately NOT a third full-weight bar: see             */
+/* .diff-expand-mid below.                                                  */
 /* ---------------------------------------------------------------------- */
 
 .diff-body {
@@ -1521,17 +1541,28 @@ input[type="checkbox"]:checked::after {
   font-size: 11px;
 }
 
-/* Primary expand button(s) (advance EXPAND_STEP lines, or the true
- * remaining count when fewer than that are left -- see buildGapAboveRow/
- * buildGapBelowRow in diff.js) and the "expand all" secondary sit in one
- * flex row so they read as one control, the secondary visually subordinate
- * to the primary: it is the occasional choice (a wide gap you actually want
- * to see in full), not the default click. */
 .diff-expand-controls {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+/* The direction-agnostic "全部（N 行）" control for a gapAbove wide enough
+ * to still show both directional buttons (see EXPAND_STEP in diff.js).
+ * Sits between .diff-expand-down and .diff-expand-up, in the same spot the
+ * gap's own hidden stretch would occupy -- deliberately NOT wrapped in
+ * another .diff-expand-row: two full-weight chrome bars already frame this
+ * spot, so a third one back-to-back with them would read as a whole extra
+ * row rather than a lightweight "also available" affordance living between
+ * the two it complements. .diff-expand-btn-all already carries the
+ * subordinate styling (dim, borderless until hover); this just centers it
+ * in a slim strip instead of a full bar. */
+.diff-expand-mid {
+  display: flex;
+  justify-content: center;
+  padding: 3px 0;
+  background: var(--code-empty-bg);
 }
 
 .diff-expand-btn {
