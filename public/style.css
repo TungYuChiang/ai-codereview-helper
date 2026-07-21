@@ -664,6 +664,18 @@ select:focus-visible {
   white-space: nowrap;
 }
 
+/* Same problem, same fix, for branch/tag names -- ticket-prefixed branches
+ * routinely run 40+ characters and were the single biggest contributor to
+ * the top bar wrapping onto a second row. Full name still reachable via
+ * title (see updateRefSelectTitles() in app.js). */
+#base-select,
+#target-select {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 input[type="text"] {
   font-family: var(--font-sans);
   font-size: 12.5px;

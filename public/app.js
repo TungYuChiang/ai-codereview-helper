@@ -372,6 +372,20 @@ function populateBaseTargetSelects(refs) {
     opt.value = name;
     targetSelectEl.appendChild(opt);
   }
+
+  updateRefSelectTitles();
+}
+
+// Branch/tag names are user-controlled and can be long (ticket-prefixed
+// branches especially) -- capped by #base-select/#target-select's max-width
+// in style.css, same treatment as #repo-select. The <select> itself carries
+// the full name as a title so the closed, ellipsis-truncated control still
+// reveals it on hover, matching updateRepoSelectTitle() above.
+function updateRefSelectTitles() {
+  baseSelectEl.title = baseSelectEl.value;
+  targetSelectEl.title = targetSelectEl.value === 'WORKING_TREE'
+    ? 'Working Tree'
+    : targetSelectEl.value;
 }
 
 function pickDefaultBase(branches) {
@@ -387,12 +401,14 @@ function updateWorkingTreeHint() {
 
 baseSelectEl.addEventListener('change', async () => {
   appState.base = baseSelectEl.value;
+  updateRefSelectTitles();
   saveSelection();
   await loadDiff();
 });
 
 targetSelectEl.addEventListener('change', async () => {
   appState.target = targetSelectEl.value;
+  updateRefSelectTitles();
   updateWorkingTreeHint();
   saveSelection();
   await loadDiff();
@@ -492,6 +508,7 @@ async function loadRefsForRepo() {
 
   if (appState.base) baseSelectEl.value = appState.base;
   targetSelectEl.value = appState.target;
+  updateRefSelectTitles();
   updateWorkingTreeHint();
   saveSelection();
 
@@ -1747,11 +1764,23 @@ async function discardOrphan(key, cardEl) {
 // panel with a select-all-able textarea is shown instead, with the reason.
 // ===========================================================================
 
+// Full labels ("匯出我的疑問（Claude）" / "匯出筆記（Markdown）") no longer fit
+// the top bar once repo/branch names are realistically long -- they were the
+// single biggest contributor to the bar wrapping onto a second row (see
+// docs/dev-log/screenshots/106-read-vs-unread-adjacent-github-light.png).
+// Shortened to the same treatment already used for long select values
+// elsewhere in this bar: visible text is trimmed, the full original label
+// moves to `title` so it's still a hover away, and `aria-label` keeps the
+// full label as the accessible name so screen readers lose nothing.
 const exportGroupEl = createEl('div', { className: 'topbar-group export-group' });
-const exportClaudeBtnEl = createEl('button', { className: 'export-btn', text: '匯出我的疑問（Claude）' });
+const exportClaudeBtnEl = createEl('button', { className: 'export-btn', text: '匯出疑問' });
 exportClaudeBtnEl.type = 'button';
-const exportMarkdownBtnEl = createEl('button', { className: 'export-btn', text: '匯出筆記（Markdown）' });
+exportClaudeBtnEl.title = '匯出我的疑問（Claude）';
+exportClaudeBtnEl.setAttribute('aria-label', '匯出我的疑問（Claude）');
+const exportMarkdownBtnEl = createEl('button', { className: 'export-btn', text: '匯出筆記' });
 exportMarkdownBtnEl.type = 'button';
+exportMarkdownBtnEl.title = '匯出筆記（Markdown）';
+exportMarkdownBtnEl.setAttribute('aria-label', '匯出筆記（Markdown）');
 exportGroupEl.append(exportClaudeBtnEl, exportMarkdownBtnEl);
 topbarEl.appendChild(exportGroupEl);
 
