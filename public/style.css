@@ -116,6 +116,26 @@
   --color-note: #eab308;          /* comments / attention -- unchanged amber, still hue-distinct from the new orange accent */
   --color-note-wash: rgba(234, 179, 8, 0.12);
 
+  /* -- file identity (sidebar-prominence unit) --
+     A structural signal for "this is a file name", deliberately NOT
+     --color-accent: accent already carries three state meanings (read
+     state, progress fill, current selection) plus, as of the single-file-
+     view unit, "this file is open" (the tree header's left rail). Reusing
+     it a fourth time for "this is a file name" would make an unread,
+     not-open file's name look like it's asserting one of those states.
+     Cool blue reads as structure/identity rather than status -- the same
+     role blue plays in most editors' file trees -- and is nowhere near the
+     warm terracotta accent or the warm-neutral text ramp above, so the two
+     never blur together even at a glance. Reuses the existing --code-
+     function hue (already contrast-verified in this file's own comments)
+     rather than inventing an unrelated color, since both are "this names a
+     piece of code" roles, just in different regions of the UI (sidebar
+     chrome vs. syntax highlighting) -- contrast re-checked here for the
+     sidebar's own backgrounds, not assumed from that: 8.0:1 on
+     --color-surface (#141414) and 7.0:1 on --color-panel (#212121), the
+     two backgrounds a file row/header ever sits on, dark or "file-open". */
+  --color-file-label: #82aaff;
+
   /* -- change-point status rail: four states, addendum 4.4 -- */
   --color-rail-unread: var(--color-fg-ghost);
   --color-rail-current: var(--color-accent);
@@ -259,6 +279,11 @@
     --color-destructive-wash: rgba(220, 38, 38, 0.1);
     --color-note: #854d0e;
     --color-note-wash: rgba(133, 77, 14, 0.1);
+
+    /* Same --code-function-derived reasoning as the dark default above:
+       5.8:1 on --color-surface (#efeeeb) and 6.7:1 on --color-panel
+       (#ffffff), the two backgrounds a file row/header sits on here. */
+    --color-file-label: #1d4ed8;
 
     --color-focus-ring: #a8532f;
 
@@ -937,6 +962,24 @@ input[type="checkbox"]:checked::after {
   color: var(--color-fg);
 }
 
+/* File-level disclosure triangle: bigger and more visible than the function/
+ * change-point toggles above (addendum: "下拉符號可以大一點明顯一點",
+ * specifically about the file row). Colored with the same structural
+ * --color-file-label as the file name it sits next to, tying the two
+ * together as "this row is a file, and here is its fold control" -- the
+ * function/change-point toggles stay on the neutral faint color, so the
+ * size+color jump itself reads as another file-vs-content signal. */
+.tree-file-row .toggle-btn {
+  width: 16px;
+  flex: 0 0 16px;
+  font-size: 13px;
+  color: var(--color-file-label);
+}
+
+.tree-file-row .toggle-btn:hover {
+  color: var(--color-fg);
+}
+
 .tree-label {
   flex: 1 1 auto;
   overflow: hidden;
@@ -1022,8 +1065,14 @@ input[type="checkbox"]:checked::after {
   font-weight: 400;
 }
 
+/* Structural color, not the state accent -- see --color-file-label's own
+ * comment in the token block for why. Deliberately on .tree-name only, not
+ * .tree-dir above it: the directory is context, the name is the identifying
+ * part, and coloring only the latter previews the same "protect the
+ * identifying part" idea the function-name truncation fix below applies
+ * more literally. */
 .tree-file-row .tree-name {
-  color: var(--color-fg);
+  color: var(--color-file-label);
 }
 
 /* Thin progress rail under file / function rows -- addendum: "還剩多少沒看"
@@ -1051,6 +1100,53 @@ input[type="checkbox"]:checked::after {
   font-weight: 500;
   font-size: 12px;
   color: var(--color-fg-dim);
+}
+
+/* Function-name truncation fix (addendum's third, unnamed problem): the
+ * label is a flex row of two spans instead of one text node, so the two
+ * halves can shrink independently -- see buildFunctionLabel() in tree.js
+ * for how the name is split on its LAST '.' into owner-prefix + identifying
+ * tail. min-width: 0 is required for a flex item to be allowed to shrink
+ * below its content's natural width at all (the flexbox default is
+ * min-width: auto, which would otherwise let the prefix push the row wider
+ * than available space instead of eliding). text-overflow: ellipsis here
+ * needs that same overflow/white-space/width combination to have any
+ * effect, same as .tree-label's own (single-node) use of it elsewhere. */
+.tree-fn-label {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+
+/* The shared owner path (e.g. "SelectList.prototype.") -- de-emphasized one
+ * step further than the function-row default color/weight, and the ONLY
+ * half allowed to shrink: flex-shrink is the default (1) here, explicit
+ * only for contrast with the tail below. This is what makes it the part
+ * that gets truncated first as the row narrows, instead of the identifying
+ * tail. */
+.tree-fn-prefix {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-fg-faint);
+  font-weight: 400;
+}
+
+/* The identifying member name (e.g. "resetNodeIdsAndOptions") -- never
+ * shrinks (flex-shrink: 0), so the flex algorithm exhausts the prefix's
+ * width first and this renders at its full natural width for as long as
+ * there is any room left at all; only once the prefix has already been
+ * squeezed to nothing does this itself start losing pixels off the end
+ * (browser overflow clipping on the row, not an ellipsis -- by that point
+ * the row is already far past the "shrink until illegible" test's normal
+ * range). Kept at the function-row's normal-emphasis color/weight (inherits
+ * from .tree-group-row .tree-label above) so it reads as the "real" name,
+ * with the prefix visibly secondary next to it. */
+.tree-fn-tail {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 /* Level 3: change point. Monospace regular, smallest, tabular numerals so
@@ -1146,9 +1242,13 @@ input[type="checkbox"]:checked::after {
 
 /* Same emphasis as the file's own tree row name (see .tree-file-row
  * .tree-name) -- this header and that tree row name the same file, so they
- * should read as one identity. */
+ * should read as one identity. Not the state accent (see --color-file-label's
+ * token comment): this header already has its own state signal, the
+ * panel background + left rail toggled by .file-open in tree.js's
+ * updateActiveFileInTree, and that stays exactly as before -- only the text
+ * color changes here. */
 .file-pane-header-label .tree-name {
-  color: var(--color-fg);
+  color: var(--color-file-label);
 }
 
 .file-pane-header-label .tree-dir {
