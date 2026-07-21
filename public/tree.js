@@ -5,7 +5,15 @@
 // for why change-point *pane* construction lives in a separate file from
 // the tree-row building here).
 
-import { appState, dom, createEl, treeRootEl, changepointsRootEl, filePaneHeaderEl } from './state.js';
+import {
+  appState,
+  dom,
+  createEl,
+  buildFunctionLabel,
+  treeRootEl,
+  changepointsRootEl,
+  filePaneHeaderEl,
+} from './state.js';
 import { renderChangePointTreeRow, openFile } from './pane.js';
 import { updateStatsDom } from './nav.js';
 import { renderOrphans } from './comments.js';
@@ -77,36 +85,6 @@ function buildFileLabel(path) {
   }
   label.appendChild(createEl('span', { className: 'tree-dir', text: path.slice(0, slash + 1) }));
   label.appendChild(createEl('span', { className: 'tree-name', text: path.slice(slash + 1) }));
-  return label;
-}
-
-// Splits a function/group name into a de-emphasized shared "owner" prefix
-// (everything up to and including the LAST '.') and the identifying tail
-// that follows it, each in its own span so CSS can protect the tail from
-// truncation independently of the prefix (see .tree-fn-prefix/.tree-fn-tail
-// in style.css) -- addendum's third problem: two different functions can
-// both render as "SelectList.prototype.res…" once naive end-truncation eats
-// the shared "SelectList.prototype." and drops exactly the part
-// (resetNodeIdsAndOptions vs resetLazyRenderState) that tells them apart.
-// This works for every naming shape functions.js produces without any
-// special-casing of "prototype": a plain declaration like autoSaveNUIForm
-// has no dot, so the whole name is the tail and there's no prefix to strip;
-// X.prototype.y, X.y, class methods Foo.bar, and object-literal methods
-// API.foo are all, structurally, "some dotted owner path, then the
-// identifying member name" -- splitting on the LAST dot always lands the
-// break in the right place. The full name is still on the label via title,
-// for whichever edge case (e.g. a name with no clear "tail", or one so long
-// the tail itself still doesn't fit) truncation can't fully solve visually.
-function buildFunctionLabel(name) {
-  const label = createEl('span', { className: 'tree-label tree-fn-label' });
-  label.title = name;
-  const dot = name.lastIndexOf('.');
-  if (dot === -1) {
-    label.appendChild(createEl('span', { className: 'tree-fn-tail', text: name }));
-    return label;
-  }
-  label.appendChild(createEl('span', { className: 'tree-fn-prefix', text: name.slice(0, dot + 1) }));
-  label.appendChild(createEl('span', { className: 'tree-fn-tail', text: name.slice(dot + 1) }));
   return label;
 }
 

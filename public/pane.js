@@ -32,7 +32,15 @@
 // comment UI once a file's change points exist), and prefs.js (persist
 // which file is open) -- nothing here imports tree.js back, no cycle.
 
-import { appState, dom, createEl, changepointsRootEl, mainPaneEl, filePaneHeaderEl } from './state.js';
+import {
+  appState,
+  dom,
+  createEl,
+  buildFunctionLabel,
+  changepointsRootEl,
+  mainPaneEl,
+  filePaneHeaderEl,
+} from './state.js';
 import { renderChangePointContent, runGapExpand, makeGap, EXPAND_AUTO_THRESHOLD } from './diff.js';
 import { onToggleCheck, selectChangePoint, setupScrollSpy } from './nav.js';
 import { renderAllComments } from './comments.js';
@@ -110,6 +118,52 @@ export function renderChangePointTreeRow(changePoint, group, file, groupKey, par
   appState.order.push(key);
 }
 
+// What the right-pane header names a change point by, now that the pane
+// shows exactly one file's code at a time: the line range it used to show
+// (+1207..1219) is close to noise on its own -- nobody remembers what line
+// 1207 was, and the diff rows directly below already carry line numbers in
+// the gutter, so repeating the range up here was pure duplication. What the
+// header uniquely knows that the gutter doesn't is which FUNCTION the code
+// on screen belongs to (entry.group.name), or, for a change point outside
+// any function -- entry.group.name is null both for a non-JS file and for
+// an edit between two functions, see model.js's groupChangePoints -- which
+// FILE it's in (the tree already shows this, but the tree isn't visible
+// while your eye is on the code). A function can own more than one change
+// point (SelectList.prototype.listMulti has four in the fixture used to
+// verify this), and four identical "listMulti" headers in a row would be
+// exactly the noise this replaces, so a "(2/4)"-style ordinal -- this
+// change point's position within entry.group.changePoints, that group's own
+// total -- is appended whenever the owning group has more than one.
+function buildChangePointHeaderLabel(entry) {
+  const { changePoint, group, file } = entry;
+  const total = group.changePoints.length;
+  const ordinal =
+    total > 1 ? ` (${group.changePoints.findIndex((cp) => cp.id === changePoint.id) + 1}/${total})` : '';
+
+  if (group.name !== null) {
+    // Reuses tree.js's own long-name fix (de-emphasized owner prefix, never-
+    // truncated identifying tail, full name on title) rather than inventing
+    // a second truncation scheme -- see buildFunctionLabel's own comment in
+    // state.js for why it lives there instead of being duplicated here.
+    // 'changepoint-label' (in place of tree.js's 'tree-label') is what lets
+    // this header's own flex/ellipsis rule apply instead of the tree row's.
+    const label = buildFunctionLabel(group.name, 'changepoint-label');
+    label.lastElementChild.textContent += ordinal;
+    return label;
+  }
+
+  // File-level change point: no owning function, so the file is the only
+  // thing left that answers "what is this". Just the basename, not the full
+  // path -- the directory is already sitting right above in the sticky
+  // .file-pane-header (renderFilePaneHeader below), so repeating it here
+  // would be the same kind of duplication this whole label is fixing.
+  const slash = file.path.lastIndexOf('/');
+  const baseName = slash === -1 ? file.path : file.path.slice(slash + 1);
+  const label = createEl('span', { className: 'changepoint-label', text: baseName + ordinal });
+  label.title = file.path;
+  return label;
+}
+
 // Builds the right-pane container for one change point that has already
 // been through renderChangePointTreeRow (so `entry` already exists in
 // dom.changePoints) -- called only for change points belonging to whichever
@@ -118,9 +172,8 @@ export function renderChangePointTreeRow(changePoint, group, file, groupKey, par
 // to it captured before the file was opened (see openChangePoint) is still
 // valid afterward.
 function renderChangePointPane(entry, neighborMap) {
-  const { changePoint, file } = entry;
+  const { changePoint, group, file } = entry;
   const key = changePoint.id;
-  const rangeLabel = `+${changePoint.newStart}..${changePoint.newEnd}`;
 
   // EXTENSION POINT 4: data-key is how the comment unit locates this
   // container to attach its comment UI.
@@ -128,11 +181,21 @@ function renderChangePointPane(entry, neighborMap) {
   container.dataset.key = key;
 
   const header = createEl('div', { className: 'changepoint-header' });
-  const headerLabel = createEl('span', { className: 'changepoint-label', text: rangeLabel });
+  const headerLabel = buildChangePointHeaderLabel(entry);
   const rightCheckbox = document.createElement('input');
   rightCheckbox.type = 'checkbox';
   rightCheckbox.checked = changePoint.checked;
-  rightCheckbox.setAttribute('aria-label', `mark ${rangeLabel} reviewed`);
+  // The visible header now names the function/file (see
+  // buildChangePointHeaderLabel above), not the line range -- but the range
+  // is still the one unambiguous, always-available fact about WHERE this is
+  // (a function name repeats across its "(i/N)" siblings; a screen-reader
+  // user isn't reading the diff gutter's line numbers the way a sighted
+  // user is), so it's kept here, non-visually, for that.
+  const target = group.name !== null ? group.name : file.path;
+  rightCheckbox.setAttribute(
+    'aria-label',
+    `mark ${target}, lines ${changePoint.newStart}-${changePoint.newEnd} reviewed`,
+  );
   rightCheckbox.addEventListener('change', () => onToggleCheck(key, rightCheckbox.checked));
   header.append(headerLabel, rightCheckbox);
   container.appendChild(header);
