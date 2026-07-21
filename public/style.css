@@ -80,6 +80,15 @@
   --color-border: #2f2f2f;     /* hairline separators */
   --color-border-strong: #474747; /* control outlines (select, checkbox, pill) */
 
+  /* -- scrollbar thumb --
+     Deliberately rgba, not a hex from the ramp above. The thumb travels
+     over #tree-pane, over code rows carrying their own diff tints, and
+     over the topbar band; a flat hex tuned to read as "subtle" on
+     #191919 reads as a bar once it is sitting on a red removed-line row.
+     Compositing keeps the same relative lift on every backdrop. */
+  --color-scrollbar-thumb: rgba(255, 255, 255, 0.16);
+  --color-scrollbar-thumb-hover: rgba(255, 255, 255, 0.34);
+
   /* -- text --
      fg carries a few units of warm bias (R slightly > G slightly > B) per
      "柔和的暖白...不要刺眼的純白" -- everything else in this family stays on
@@ -264,6 +273,13 @@
 
     --color-border: #ddd9d4;
     --color-border-strong: #bcb7b0;
+
+    /* Black rather than an inverted white: on the light theme the thumb
+       has to darken its backdrop, and the same 0.16 alpha that is barely
+       there on #191919 is heavier on #f7f6f4, so the resting value drops
+       to 0.14. */
+    --color-scrollbar-thumb: rgba(0, 0, 0, 0.14);
+    --color-scrollbar-thumb-hover: rgba(0, 0, 0, 0.32);
 
     --color-fg: #201d1a;
     --color-fg-dim: #45413c;
@@ -2217,3 +2233,94 @@ body.sbs-dragging {
 }
 
 /* END ui-sbs-splitter                                                      */
+
+/* ------------------------------------------------------------------------ */
+/* BEGIN ui-scrollbars -- VSCode-style overlay scrollbars: thin, translucent, */
+/* and invisible while the surface is idle.                                   */
+/*                                                                            */
+/* Before this block there was no scrollbar styling at all, so Chrome drew    */
+/* its default: an opaque light-grey bar, permanently visible whenever the    */
+/* OS is set to "always show scroll bars" (or a mouse is attached), running   */
+/* the full height of the sidebar. In a tool whose whole point is reading     */
+/* code, that bar competes with the code.                                     */
+/*                                                                            */
+/* The gutter is still reserved even when the thumb is invisible -- Chrome    */
+/* only stops reserving it for `overflow: overlay`, which is removed. That    */
+/* is the better trade anyway: a thumb that appears on scroll would otherwise */
+/* reflow every line of code sideways the moment you touched the wheel.       */
+/* Reserved-and-empty costs 10px of constant width and shifts nothing, ever.  */
+/*                                                                            */
+/* Applied to every scroll container rather than a hand-listed set -- new     */
+/* scrollable UI should inherit this without anyone remembering to opt in.    */
+/* ------------------------------------------------------------------------ */
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+/* Transparent, not var(--color-track): the track spans the full height of
+ * whatever it is attached to, so any fill at all draws a visible stripe down
+ * the edge of the sidebar -- exactly the thing being removed here. */
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* The 2px transparent border plus background-clip: padding-box is what makes
+ * a 10px-wide scrollbar draw a 6px-wide thumb: the border is part of the
+ * element but the background stops at the padding edge. Doing it this way
+ * rather than by narrowing ::-webkit-scrollbar keeps the *hit target* at the
+ * full 10px, so the thumb stays easy to grab while reading as thin. */
+*::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 5px;
+  transition: background-color var(--transition-normal);
+}
+
+/* Two ways to bring the thumb back, matching VSCode: point at the surface,
+ * or scroll it. `.is-scrolling` is added by scrollbars.js on the element
+ * being scrolled and removed once it has been quiet -- see that file for why
+ * the idle delay is where it is. Hover is the discoverability half: without
+ * it there would be no way to find out a pane scrolls except by trying. */
+*:hover::-webkit-scrollbar-thumb,
+.is-scrolling::-webkit-scrollbar-thumb {
+  background-color: var(--color-scrollbar-thumb);
+}
+
+/* Only lifts when the pointer is on the thumb itself, not merely inside the
+ * scrolling element -- the brighter value is feedback for "you can grab
+ * this", so firing it from anywhere in the pane would make it meaningless. */
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-scrollbar-thumb-hover);
+}
+
+/* Firefox has no per-state scrollbar pseudo-elements, so idle-hiding is not
+ * expressible there. `thin` + the same thumb colour gets the "not so loud"
+ * half of the request; the disappearing half degrades to always-thin.
+ *
+ * The @supports guard is load-bearing, not defensive tidiness. Chrome has
+ * shipped the standard scrollbar-width/scrollbar-color properties since 121,
+ * and setting *either* of them makes it drop the whole ::-webkit-scrollbar
+ * pseudo-element tree for that element -- the two models do not compose.
+ * Written unguarded (as it was first), this rule silently won on Chrome and
+ * every rule above became dead: the thumb went back to being permanently
+ * painted, since scrollbar-color has no idle state to hook. Measured, not
+ * inferred -- #tree-pane's reserved gutter came back 11px (the UA's `thin`)
+ * instead of the 10px set above, which is what gave it away.
+ *
+ * Inverting the test (`@supports selector(::-webkit-scrollbar)` around the
+ * webkit block) would not work: Firefox does not support that selector, but
+ * neither does it need to, and Chrome supports both -- so the cascade order
+ * would still hand the win to whichever came last. Excluding webkit engines
+ * explicitly is the only version of this that stays correct. */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-scrollbar-thumb) transparent;
+  }
+}
+
+/* END ui-scrollbars                                                          */

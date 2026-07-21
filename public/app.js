@@ -32,6 +32,7 @@ import { loadRepos, loadRefsForRepo } from './load.js';
 // startup, same as every other module here.
 import './export.js';
 import './keyboard.js';
+import './scrollbars.js';
 
 // ===========================================================================
 // Empty state -- first run, no repos configured yet. Points at the
