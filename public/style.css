@@ -212,6 +212,13 @@
   /* -- motion -- */
   --transition-fast: 150ms ease;
   --transition-normal: 200ms ease;
+
+  /* -- layout --
+     Height of #file-pane-header (see its rule further down), shared with
+     .changepoint-header's own `top` offset so the two sticky bars stack
+     instead of overlapping at the same pinned position -- see the block
+     comment above .file-pane-header for why. */
+  --file-pane-header-h: 34px;
 }
 
 /* Light mapping for the "Claude Code" default theme -- same neutral-grey/
@@ -973,8 +980,25 @@ input[type="checkbox"]:checked::after {
   z-index: 2;
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
+  /* Reserved (transparent) on every file header so switching it on below
+   * never shifts the row's own content by 3px -- same technique
+   * .changepoint already uses for its unread/current/read rail. */
+  border-left: 3px solid transparent;
   padding-top: 2px;
   padding-bottom: 2px;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+/* Which file is currently displayed in the right pane -- a distinct signal
+ * from "current change point" (.tree-changepoint.current below): the right
+ * pane now shows exactly one file at a time (see openFile() in app.js), so
+ * the tree needs to say which one without relying on scroll position the
+ * way it used to. Reuses the same accent-rail vocabulary
+ * .tree-changepoint.current already established for "this is where you
+ * are". */
+.tree-file-header.file-open {
+  background: var(--color-panel);
+  border-left-color: var(--color-accent);
 }
 
 /* Level 1: file. Proportional sans, semibold, directory in a dimmer shade
@@ -1076,6 +1100,67 @@ input[type="checkbox"]:checked::after {
 /*                         same notch as read, code content still full     */
 /* ---------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------- */
+/* Right pane: single-file view header                                     */
+/*                                                                          */
+/* The right pane shows exactly one file's change points at a time (see    */
+/* openFile()/renderFilePane() in app.js) instead of every file concate-   */
+/* nated into one long scroll -- the user's own complaint was that nothing */
+/* stopped your eye from drifting into the next file while reading. This   */
+/* header is the anchor that used to come for free from scrolling past a   */
+/* file boundary: with that boundary gone, the file you're looking at      */
+/* needs to stay nameable without scrolling back up. Sticky at the very    */
+/* top of #main-pane's own scroll, same pattern as .tree-file-header in    */
+/* the sidebar; --file-pane-header-h (token block) keeps                   */
+/* .changepoint-header's own sticky offset (below) in sync with this       */
+/* header's height so the two pinned bars stack instead of overlapping.    */
+/* ---------------------------------------------------------------------- */
+
+.file-pane-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: var(--file-pane-header-h);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border-strong);
+}
+
+.file-pane-header[hidden] {
+  display: none;
+}
+
+.file-pane-header-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+/* Same emphasis as the file's own tree row name (see .tree-file-row
+ * .tree-name) -- this header and that tree row name the same file, so they
+ * should read as one identity. */
+.file-pane-header-label .tree-name {
+  color: var(--color-fg);
+}
+
+.file-pane-header-label .tree-dir {
+  color: var(--color-fg-muted);
+  font-weight: 400;
+}
+
+.file-pane-header-badge {
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
 #changepoints-root {
   padding: 6px 12px;
 }
@@ -1162,7 +1247,10 @@ input[type="checkbox"]:checked::after {
 
 .changepoint-header {
   position: sticky;
-  top: 0;
+  /* Stacks below #file-pane-header (see its own block comment) instead of
+   * overlapping it at the same pinned position -- both are position:sticky
+   * inside the same #main-pane scroll container. */
+  top: var(--file-pane-header-h);
   z-index: 1;
   display: flex;
   align-items: center;
