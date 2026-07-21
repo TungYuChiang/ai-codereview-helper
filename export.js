@@ -9,6 +9,15 @@
 import { join } from 'node:path';
 
 const NO_QUESTIONS_NOTE = '這次 review 沒有留下任何疑問（沒有變更點被加上 comment）。';
+// Distinct from NO_QUESTIONS_NOTE on purpose: saying "no questions" when
+// comments do exist -- they just all landed in the orphan list -- would be
+// false. Orphans are dropped from this export by design (the code they
+// pointed at is gone, so the snippet/question pairing is stale), but the
+// reader still deserves to know that's *why* the prompt is empty rather
+// than being handed a blank or misleading document.
+const ORPHANS_ONLY_NOTE =
+  '這次 review 留下的 comment 都變成了孤兒（對應的程式碼已被修改或移除），' +
+  '因此沒有可以送出的疑問。孤兒 comment 仍保留在 Markdown 匯出與畫面上。';
 const FILE_LEVEL_LABEL = '(檔案層)';
 
 // ---------------------------------------------------------------------------
@@ -34,7 +43,7 @@ function collectCommentedEntries(files) {
 // ---------------------------------------------------------------------------
 
 export function toClaudePrompt(ctx) {
-  const { repoPath, files, orphans, sources } = ctx;
+  const { repoPath, files, orphans } = ctx;
   const intro =
     '這是一份 code review 的疑問清單，每一則都是我看 diff 時留下的疑問，' +
     '請針對每一則實際查證程式碼（必要時打開檔案）並回答。';
@@ -47,44 +56,39 @@ export function toClaudePrompt(ctx) {
   // point never becomes an entry here. Orphans need the same filter applied
   // explicitly, because state.js's buildAnnotated now orphans a key that
   // has *either* a comment or a note (or both) -- an orphan carrying only a
-  // note (commentOrphan.text === null) must not leak into this prompt just
-  // because it made it into the orphans array at all.
-  const commentedOrphans = (orphans ?? []).filter((orphan) => orphan.text);
-  const hasOrphans = commentedOrphans.length > 0;
+  // note (commentOrphan.text === null) must not count as "there were real
+  // questions, just orphaned" below.
+  //
+  // Orphans themselves are never rendered into this export (see
+  // ORPHANS_ONLY_NOTE above for why) -- they stay visible in the UI and in
+  // the Markdown export only. hasOrphans exists purely so the "no
+  // questions" guard below can tell "genuinely nothing was ever commented"
+  // apart from "there were comments, they just all got orphaned".
+  const hasOrphans = (orphans ?? []).some((orphan) => orphan.text);
 
-  if (entries.length === 0 && !hasOrphans) {
-    return `${intro}\n\n${NO_QUESTIONS_NOTE}`;
+  if (entries.length === 0) {
+    const note = hasOrphans ? ORPHANS_ONLY_NOTE : NO_QUESTIONS_NOTE;
+    return `${intro}\n\n${note}`;
   }
 
   const sections = [intro];
-
-  if (entries.length === 0 && !hasOrphans) {
-    sections.push(NO_QUESTIONS_NOTE);
-  } else {
-    entries.forEach((entry, index) => {
-      sections.push(formatClaudeEntry(entry, index + 1, repoPath, sources));
-    });
-  }
-
-  if (hasOrphans) {
-    sections.push(formatClaudeOrphanSection(commentedOrphans));
-  }
+  entries.forEach((entry, index) => {
+    sections.push(formatClaudeEntry(entry, index + 1, repoPath));
+  });
 
   return sections.join('\n\n---\n\n');
 }
 
-function formatClaudeEntry({ file, group, changePoint }, index, repoPath, sources) {
+function formatClaudeEntry({ file, group, changePoint }, index, repoPath) {
   const parts = [`## ${index}. ${join(repoPath, file.path)}`];
 
+  // Only the function's name and diff are kept -- not its source. The
+  // absolute path above already lets the reader open the file and read as
+  // much surrounding code (including callers) as they need; embedding the
+  // full function body here just burns context for no benefit a fixed
+  // snippet couldn't have given anyway. See task-export-slim brief.
   if (group.name !== null) {
-    parts.push(`所在 function：${group.name}（第 ${group.startLine}-${group.endLine} 行）`);
-
-    const source = sources ? sources[file.path] : undefined;
-    if (source !== undefined) {
-      const sourceLines = source.split('\n');
-      const snippet = sourceLines.slice(group.startLine - 1, group.endLine).join('\n');
-      parts.push(`Function 原始碼：\n${fence(snippet)}`);
-    }
+    parts.push(`所在 function：${group.name}`);
   }
 
   parts.push(`Diff：\n${fence(formatRawLines(changePoint.lines), 'diff')}`);
@@ -112,18 +116,6 @@ function fence(content, lang = '') {
   const fenceLength = Math.max(3, longestRun + 1);
   const marker = '`'.repeat(fenceLength);
   return `${marker}${lang}\n${content}\n${marker}`;
-}
-
-function formatClaudeOrphanSection(orphans) {
-  const parts = ['## 孤兒 comment（這些變更點已不在目前的 diff 中）'];
-  orphans.forEach((orphan, index) => {
-    const heading = `### ${index + 1}. ${orphan.filePath ?? '(未知檔案)'}`;
-    const fnLine = orphan.functionName ? `所在 function：${orphan.functionName}` : null;
-    const diffBlock = `Diff 快照：\n${fence(orphan.diffText ?? '', 'diff')}`;
-    const commentLine = `我的 comment：\n${orphan.text}`;
-    parts.push([heading, fnLine, diffBlock, commentLine].filter(Boolean).join('\n\n'));
-  });
-  return parts.join('\n\n');
 }
 
 // ---------------------------------------------------------------------------

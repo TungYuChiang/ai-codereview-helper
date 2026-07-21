@@ -119,7 +119,7 @@ describe('toClaudePrompt', () => {
     );
   });
 
-  test('includes the function name and its line range for a commented change point', () => {
+  test('includes the function name for a commented change point', () => {
     const ctx = baseCtx({
       files: [
         annotatedFile({
@@ -137,11 +137,9 @@ describe('toClaudePrompt', () => {
 
     const prompt = toClaudePrompt(ctx);
     assert.ok(prompt.includes('processMVPF'), 'expected function name to appear');
-    assert.ok(prompt.includes('15'), 'expected startLine to appear');
-    assert.ok(prompt.includes('25'), 'expected endLine to appear');
   });
 
-  test('includes the full function source sliced from sources[path] by group startLine..endLine', () => {
+  test('does not include the enclosing function source, even when ctx.sources has it (finding: slim export)', () => {
     const ctx = baseCtx({
       files: [
         annotatedFile({
@@ -159,12 +157,13 @@ describe('toClaudePrompt', () => {
     });
 
     const prompt = toClaudePrompt(ctx);
-    assert.ok(prompt.includes('function processMVPF(mvpf) {'), 'expected sliced source start line');
-    assert.ok(prompt.includes('  doSomething();'), 'expected sliced source middle line');
-    assert.ok(prompt.includes('}'), 'expected sliced source end line');
-    // Lines outside the slice must not appear.
-    assert.ok(!prompt.includes('// line 1'), 'lines before startLine must be excluded');
-    assert.ok(!prompt.includes('// line 10'), 'lines after endLine must be excluded');
+    // The diff/comment text is allowed to mention the function, but none of
+    // the *other* lines of the function body (never referenced by the diff
+    // or comment) may leak in -- that would mean the full source got
+    // embedded again.
+    assert.ok(!prompt.includes('doSomething()'), 'function body statement must not appear');
+    assert.ok(!prompt.includes('Function 原始碼'), 'the "function source" label must not appear at all');
+    assert.ok(!prompt.includes('// line 1'), 'unrelated source lines must not appear');
   });
 
   test('includes the diff with +/-/space prefixes taken from `lines`', () => {
@@ -268,29 +267,36 @@ describe('toClaudePrompt', () => {
     assert.ok(!prompt.includes('function processMVPF'), 'no function source should be sliced for file-level points');
   });
 
-  test('does not throw and omits the source section when sources[path] is missing', () => {
+  test('a note-only change point (no comment) still stays out of the Claude prompt', () => {
+    const noteOnly = annotatedChangePoint({
+      comment: null,
+      note: 'this is just a note to self, not a question',
+      diffText: '+note-only-line-should-not-appear',
+      lines: [{ type: '+', text: 'note-only-line-should-not-appear', oldLine: null, newLine: 20 }],
+    });
+
+    const ctx = baseCtx({
+      files: [annotatedFile({ groups: [annotatedGroup({ changePoints: [noteOnly] })] })],
+    });
+
+    const prompt = toClaudePrompt(ctx);
+    assert.ok(!prompt.includes('note-only-line-should-not-appear'), 'note-only diff must not appear');
+    assert.ok(!prompt.includes('this is just a note to self'), 'note text must never reach the Claude prompt');
+    assert.ok(
+      prompt.includes('這次 review 沒有留下任何疑問'),
+      'a note-only review (no comments, no orphans) has no real questions to send',
+    );
+  });
+
+  test('never includes orphan content in the Claude prompt, even when a live commented entry also exists', () => {
     const ctx = baseCtx({
       files: [
         annotatedFile({
           groups: [
-            annotatedGroup({
-              changePoints: [annotatedChangePoint({ comment: 'no source available' })],
-            }),
+            annotatedGroup({ changePoints: [annotatedChangePoint({ comment: 'a live, real question' })] }),
           ],
         }),
       ],
-      sources: {},
-    });
-
-    let prompt;
-    assert.doesNotThrow(() => {
-      prompt = toClaudePrompt(ctx);
-    });
-    assert.ok(prompt.includes('no source available'));
-  });
-
-  test('lists orphan comments in a separate section, noting they are no longer in the diff', () => {
-    const ctx = baseCtx({
       orphans: [
         {
           key: 'orphankey1234567',
@@ -304,14 +310,20 @@ describe('toClaudePrompt', () => {
     });
 
     const prompt = toClaudePrompt(ctx);
-    assert.ok(prompt.includes('src/auth.js'));
-    assert.ok(prompt.includes('handleLogin'));
-    assert.ok(prompt.includes('+const token = signToken(user);'));
-    assert.ok(prompt.includes('double-check the token expiry'));
-    assert.ok(prompt.includes('不在') || prompt.includes('no longer') || prompt.includes('not in'), 'expected a note that the change point is no longer in the current diff');
+    assert.ok(prompt.includes('a live, real question'), 'the live entry must still be there');
+    assert.ok(!prompt.includes('src/auth.js'), 'orphan file path must not leak into the Claude prompt');
+    assert.ok(!prompt.includes('handleLogin'), 'orphan function name must not leak into the Claude prompt');
+    assert.ok(
+      !prompt.includes('double-check the token expiry'),
+      'orphan comment text must not leak into the Claude prompt',
+    );
+    assert.ok(
+      !prompt.includes('+const token = signToken(user);'),
+      'orphan diff snapshot must not leak into the Claude prompt',
+    );
   });
 
-  test('does not claim there are no comments when an orphan carries a real comment (finding 1)', () => {
+  test('a review whose only annotations are orphans produces a sensible, non-misleading note (not empty, not "no questions")', () => {
     const ctx = baseCtx({
       files: [
         annotatedFile({
@@ -333,44 +345,16 @@ describe('toClaudePrompt', () => {
     const prompt = toClaudePrompt(ctx);
     assert.ok(
       !prompt.includes('這次 review 沒有留下任何疑問'),
-      'must not claim there are no questions when an orphan comment exists',
+      'must not claim there are no questions when a comment did exist, just orphaned',
     );
-    assert.ok(prompt.includes('this is a real orphaned comment'));
-  });
-
-  test('wraps function source in a fence long enough to survive embedded triple-backtick content (finding 2)', () => {
-    const sourceWithFence = [
-      'function weird() {',
-      '  const example = `template ```nested``` end`;',
-      '  return example;',
-      '}',
-    ].join('\n');
-
-    const ctx = baseCtx({
-      files: [
-        annotatedFile({
-          groups: [
-            annotatedGroup({
-              name: 'weird',
-              startLine: 1,
-              endLine: 4,
-              changePoints: [annotatedChangePoint({ comment: 'check the fence', functionName: 'weird' })],
-            }),
-          ],
-        }),
-      ],
-      sources: { 'web/sims/js/selector.js': sourceWithFence },
-    });
-
-    const prompt = toClaudePrompt(ctx);
-    const match = prompt.match(/Function 原始碼：\n(`+)\n/);
-    assert.ok(match, 'expected a fenced code block after the source label');
-    const fenceLength = match[1].length;
-    const longestInner = longestBacktickRun(sourceWithFence);
-    assert.ok(
-      fenceLength > longestInner,
-      `fence length ${fenceLength} must exceed the longest embedded backtick run ${longestInner}`,
-    );
+    // Orphans are dropped from this export entirely -- the point of this
+    // test is that the *absence* of the orphan's content is explained, not
+    // that the content itself shows up here (that's the Markdown export's
+    // job).
+    assert.ok(!prompt.includes('this is a real orphaned comment'), 'orphan comment text must not appear');
+    assert.ok(!prompt.includes('src/gone.js'), 'orphan file path must not appear');
+    assert.ok(prompt.length > 0);
+    assert.notEqual(prompt.trim(), '');
   });
 
   test('wraps the diff block in a fence long enough to survive embedded backtick content (finding 2)', () => {
@@ -403,33 +387,7 @@ describe('toClaudePrompt', () => {
     );
   });
 
-  test('wraps orphan diff snapshots in a fence long enough to survive embedded backtick content (finding 2)', () => {
-    const trickyDiff = '+const s = `a ```b``` c`;';
-    const ctx = baseCtx({
-      orphans: [
-        {
-          key: 'k1',
-          text: 'orphan text',
-          updatedAt: '2026-07-19T10:00:00.000Z',
-          filePath: 'src/gone.js',
-          functionName: 'deletedFn',
-          diffText: trickyDiff,
-        },
-      ],
-    });
-
-    const prompt = toClaudePrompt(ctx);
-    const match = prompt.match(/Diff 快照：\n(`+)diff\n/);
-    assert.ok(match, 'expected a fenced diff block after the orphan diff snapshot label');
-    const fenceLength = match[1].length;
-    const longestInner = longestBacktickRun(trickyDiff);
-    assert.ok(
-      fenceLength > longestInner,
-      `fence length ${fenceLength} must exceed the longest embedded backtick run ${longestInner}`,
-    );
-  });
-
-  test('returns a non-empty explanatory string when there are no comments at all, without throwing', () => {
+  test('a review with no annotations at all (no comments, no orphans) returns the "no questions" note, not the orphans-only note', () => {
     const ctx = baseCtx({
       files: [annotatedFile({ groups: [annotatedGroup({ changePoints: [annotatedChangePoint({ comment: null })] })] })],
       orphans: [],
@@ -441,6 +399,7 @@ describe('toClaudePrompt', () => {
     });
     assert.equal(typeof prompt, 'string');
     assert.ok(prompt.length > 0);
+    assert.ok(prompt.includes('這次 review 沒有留下任何疑問'), 'expected the plain "no questions" note');
   });
 
   test('is a pure function: does not mutate ctx', () => {
