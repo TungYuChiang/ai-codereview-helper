@@ -4,6 +4,12 @@
 
 跑在本機、一個瀏覽器分頁，服務多個專案。
 
+![AI CodeReview Helper](docs/images/screenshot.png)
+
+上圖是一次進行中的 review：左樹把改動切成 檔案 → function → 變更點，
+`addItem` 已經看完（打勾、進度條滿），`subtotal` 還沒，`applyDiscount` 留了一則疑問。
+`styles.css` 不是 JS，自動降級成兩層。底部是鍵盤操作提示。
+
 ---
 
 ## 它解決什麼
