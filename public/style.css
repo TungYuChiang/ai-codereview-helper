@@ -1021,10 +1021,11 @@ input[type="checkbox"]:checked::after {
 /* horizontal space goes to code instead of chrome. Four states:           */
 /*   unread            -> rail = ghost color                               */
 /*   current            -> rail = accent, body = panel surface             */
-/*   read               -> whole block opacity .55, rail stays accent,     */
-/*                         notch cut into the rail                         */
-/*   current AND read   -> rail full strength, body dimmed less (.75),     */
-/*                         same notch as read                              */
+/*   read               -> rail dims + gets a notch, header opacity .55,   */
+/*                         checkbox flips to checked -- code content is    */
+/*                         NOT dimmed (see read-state-contrast dev-log)    */
+/*   current AND read   -> rail full strength, header dimmed less (.75),   */
+/*                         same notch as read, code content still full     */
 /* ---------------------------------------------------------------------- */
 
 #changepoints-root {
@@ -1042,16 +1043,31 @@ input[type="checkbox"]:checked::after {
 }
 
 /* Read (checked, not current): rail dims toward the background instead of
- * showing full-strength accent, and the content itself dims too -- opacity
- * is applied to the header/content children rather than to .changepoint
- * itself, specifically so the "current + read" combination below can keep
- * the rail at full brightness while the body still fades. */
+ * showing full-strength accent. Opacity is applied to the header only (not
+ * `.changepoint-content`, and not `.changepoint` itself) -- also so the
+ * "current + read" combination below can keep the rail at full brightness
+ * while the header still fades.
+ *
+ * read-state-contrast finding: this rule used to dim `.changepoint-content`
+ * too. That composites the *code's own* token colors -- including
+ * --code-comment, which the ui-code-themes audit only ever measured at full
+ * opacity -- down to as low as 2.47:1 against row backgrounds, well under
+ * the 4.5 gate, on the theme most likely to be seen in that state (read is
+ * where most change points spend most of their life). Fixed by moving the
+ * "read" signal entirely onto chrome that isn't carrying syntax color: the
+ * rail (color + notch, below) and the sticky header (dimmed here, plus its
+ * checkbox flips to checked) are both visible at a glance while scrolling,
+ * same as before; the code itself now stays at full contrast because you
+ * may still need to re-read it. This also means every code theme -- not
+ * just the default -- keeps its own already-audited flat-background
+ * contrast numbers even once a change point is marked read, instead of
+ * silently degrading by another opacity step underneath the reader's own
+ * theme choice. */
 .changepoint.checked {
   border-left-color: var(--color-rail-read);
 }
 
-.changepoint.checked .changepoint-header,
-.changepoint.checked .changepoint-content {
+.changepoint.checked .changepoint-header {
   opacity: 0.55;
 }
 
@@ -1084,14 +1100,15 @@ input[type="checkbox"]:checked::after {
 }
 
 /* Current + read: both states hold simultaneously. Rail stays full accent
- * (overrides the dimmed .checked rail above); content still visibly fades,
- * just less than the read-only case, so "current" remains legible. */
+ * (overrides the dimmed .checked rail above); header still visibly fades,
+ * just less than the read-only case, so "current" remains legible. Code
+ * content is untouched here too, same reasoning as `.changepoint.checked`
+ * above. */
 .changepoint.current.checked {
   border-left-color: var(--color-rail-current-read);
 }
 
-.changepoint.current.checked .changepoint-header,
-.changepoint.current.checked .changepoint-content {
+.changepoint.current.checked .changepoint-header {
   opacity: 0.75;
 }
 
