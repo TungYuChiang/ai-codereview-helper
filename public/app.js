@@ -822,6 +822,10 @@ function renderChangePoint(changePoint, group, file, groupKey, parentUl, neighbo
       belowLoading: false,
       aboveError: null,
       belowError: null,
+      aboveWanted: null, // lines requested by the in-flight/last-attempted
+      belowWanted: null, // fetch, so a retry after an error repeats the
+                          // same-sized request rather than silently
+                          // defaulting to a different one (see runExpand).
     },
   };
 
@@ -1111,15 +1115,24 @@ function buildSideBySideRow(line, lang, side) {
 // setupScrollSpy). j/k/u/checked-count/progress-rail are therefore
 // untouched by construction, not by care taken here.
 //
-// Two lines control the whole feature:
+// Three lines control the whole feature:
+//   EXPAND_STEP            -- lines the *primary* button reveals per click,
+//                            GitHub/GitLab-style. Previously the primary
+//                            button revealed the *entire* remaining gap in
+//                            one click (e.g. "Show 588 lines below"), which
+//                            weighed the costs wrong: a few extra clicks are
+//                            cheap, while 588 lines landing at once shoves
+//                            whatever the user was reading off screen, and
+//                            scrolling back to find it is far more annoying
+//                            than clicking twice more. A fixed 20-line step
+//                            keeps each click's blast radius small.
 //   EXPAND_REQUEST_CAP    -- max lines pulled in one request (mirrors the
-//                            server's own MAX_LINES_PER_REQUEST, so a single
-//                            click reveals the *entire* remaining gap to the
-//                            neighboring change point whenever that gap fits
-//                            in one request -- which covers the vast
-//                            majority of real diffs. Only a gap wider than
-//                            2000 lines needs a second click, and it repeats
-//                            in further 2000-line chunks after that).
+//                            server's own MAX_LINES_PER_REQUEST). Both the
+//                            step-sized primary button and the "expand all"
+//                            secondary control clamp to this, so "expand
+//                            all" on a gap wider than 2000 lines still
+//                            needs repeat clicks, each pulling another
+//                            2000-line chunk until the gap is exhausted.
 //   EXPAND_AUTO_THRESHOLD -- gaps this small or smaller (to a neighboring
 //                            change point, or to the top of the file) render
 //                            immediately with no button at all, because a
@@ -1131,6 +1144,7 @@ function buildSideBySideRow(line, lang, side) {
 //                            gap between adjacent hunks with room to spare,
 //                            without silently pre-loading anything a user
 //                            would call "a real expand".
+const EXPAND_STEP = 20;
 const EXPAND_REQUEST_CAP = 2000;
 const EXPAND_AUTO_THRESHOLD = 8;
 
@@ -1146,22 +1160,26 @@ function toContextLine(line) {
   return { type: ' ', oldLine: null, newLine: line.n, text: line.text };
 }
 
-// Range to request for one expand click/auto-load, always <=
-// EXPAND_REQUEST_CAP lines and always clamped to this change point's
-// aboveLimit/belowLimit so it can never cross into a neighboring change
-// point's own territory.
-function computeExpandRange(entry, direction) {
+// Range to request for one expand click/auto-load. `wanted` is how many
+// lines this particular click is asking for -- EXPAND_STEP for the primary
+// button, the true remaining count for the "expand all" button (see
+// buildExpandRow) -- and is always further clamped to EXPAND_REQUEST_CAP
+// (the server rejects anything larger, see MAX_LINES_PER_REQUEST in
+// server.js) and to this change point's aboveLimit/belowLimit so a request
+// can never cross into a neighboring change point's own territory.
+function computeExpandRange(entry, direction, wanted) {
   const state = entry.expand;
+  const size = Math.min(wanted, EXPAND_REQUEST_CAP);
   if (direction === 'above') {
     const requestEnd = state.aboveLoaded - 1;
-    const requestStart = Math.max(state.aboveLimit, requestEnd - EXPAND_REQUEST_CAP + 1);
+    const requestStart = Math.max(state.aboveLimit, requestEnd - size + 1);
     return { requestStart, requestEnd };
   }
   const requestStart = state.belowLoaded + 1;
   const requestEnd =
     state.belowLimit != null
-      ? Math.min(state.belowLimit, requestStart + EXPAND_REQUEST_CAP - 1)
-      : requestStart + EXPAND_REQUEST_CAP - 1; // unbounded: server clamps to totalLines
+      ? Math.min(state.belowLimit, requestStart + size - 1)
+      : requestStart + size - 1; // unbounded: server clamps to totalLines
   return { requestStart, requestEnd };
 }
 
@@ -1212,20 +1230,32 @@ function applyExpandResult(entry, direction, data) {
 // why base would be wrong) rather than frozen at entry-creation time, same
 // as every other API call in this file; a change point entry only survives
 // until the next tree rebuild anyway (renderTree clears dom.changePoints).
-async function runExpand(entry, direction) {
+//
+// `wanted` is how many lines this click asked for -- defaults to
+// EXPAND_REQUEST_CAP for the auto-load call sites in renderChangePoint
+// (small gaps only, always well under the cap either way) and is passed
+// explicitly by buildExpandRow's primary/all/retry buttons. It is only a
+// request, not a promise: computeExpandRange still clamps it to
+// EXPAND_REQUEST_CAP and to aboveLimit/belowLimit, and applyExpandResult
+// still filters the response down to genuinely new lines, so a `wanted`
+// larger than what is actually left (e.g. clicking primary with 7 lines
+// remaining) terminates the gap correctly rather than overshooting.
+async function runExpand(entry, direction, wanted = EXPAND_REQUEST_CAP) {
   const state = entry.expand;
   const loadingKey = direction === 'above' ? 'aboveLoading' : 'belowLoading';
   const doneKey = direction === 'above' ? 'aboveDone' : 'belowDone';
   const errorKey = direction === 'above' ? 'aboveError' : 'belowError';
+  const wantedKey = direction === 'above' ? 'aboveWanted' : 'belowWanted';
 
   if (state[loadingKey] || state[doneKey]) return;
 
   state[loadingKey] = true;
   state[errorKey] = null;
+  state[wantedKey] = wanted;
   renderChangePointContent(entry);
 
   try {
-    const { requestStart, requestEnd } = computeExpandRange(entry, direction);
+    const { requestStart, requestEnd } = computeExpandRange(entry, direction, wanted);
     const data = await api.getLines(appState.repo, appState.target, state.filePath, requestStart, requestEnd);
     applyExpandResult(entry, direction, data);
   } catch (err) {
@@ -1240,7 +1270,24 @@ async function runExpand(entry, direction) {
 // returns null to render nothing on that side (fully expanded already, or
 // there was never a gap there to begin with -- e.g. the very first change
 // point in a file starting at line 1). Three mutually exclusive states:
-// loading / error (with retry) / a real "expand N lines" button.
+// loading / error (with retry) / a real button row.
+//
+// The button row itself has three shapes, all in Traditional Chinese to
+// match the rest of the UI (footer hint bar, export buttons):
+//   - remaining unknown (only the "below" side of the last change point in
+//     a file before its first fetch, see belowLimit in renderChangePoint):
+//     just the EXPAND_STEP-sized primary button, e.g. "↓ 20 行" -- there is
+//     no true count to show on an "expand all" control yet.
+//   - remaining < EXPAND_STEP: primary alone, showing the true remaining
+//     count instead of promising 20, e.g. "↑ 剩 7 行" -- a secondary
+//     "expand all" control would be redundant (the primary already clears
+//     the whole gap in one click) so it is dropped.
+//   - remaining >= EXPAND_STEP: primary shows the fixed step, e.g.
+//     "↓ 20 行", plus a secondary "全部（588 行）" control on the same row
+//     that expands the whole remaining gap (in EXPAND_REQUEST_CAP-sized
+//     chunks if it's over the server's per-request cap -- see runExpand).
+//     The secondary is visually subordinate (.diff-expand-btn-all in
+//     style.css): it's the occasional choice, not the default.
 function buildExpandRow(entry, direction) {
   const state = entry.expand;
   const done = direction === 'above' ? state.aboveDone : state.belowDone;
@@ -1248,47 +1295,80 @@ function buildExpandRow(entry, direction) {
 
   const loading = direction === 'above' ? state.aboveLoading : state.belowLoading;
   const error = direction === 'above' ? state.aboveError : state.belowError;
+  const wanted = direction === 'above' ? state.aboveWanted : state.belowWanted;
 
   const row = createEl('div', { className: `diff-expand-row diff-expand-${direction}` });
 
   if (loading) {
     row.classList.add('loading');
-    row.appendChild(createEl('span', { className: 'diff-expand-status', text: 'Loading context…' }));
+    row.appendChild(createEl('span', { className: 'diff-expand-status', text: '載入中…' }));
     return row;
   }
 
   if (error) {
     row.classList.add('error');
     row.appendChild(createEl('span', { className: 'diff-expand-status diff-expand-error', text: error }));
-    const retryBtn = createEl('button', { className: 'diff-expand-btn', text: 'Retry' });
+    const retryBtn = createEl('button', { className: 'diff-expand-btn diff-expand-btn-primary', text: '重試' });
     retryBtn.type = 'button';
-    retryBtn.addEventListener('click', () => runExpand(entry, direction));
+    // Reuse whatever size the failed attempt asked for, so a retry doesn't
+    // silently turn a 20-line primary click into a much larger request.
+    retryBtn.addEventListener('click', () => runExpand(entry, direction, wanted ?? EXPAND_REQUEST_CAP));
     row.appendChild(retryBtn);
     return row;
   }
 
   const loaded = direction === 'above' ? state.aboveLoaded : state.belowLoaded;
   const limit = direction === 'above' ? state.aboveLimit : state.belowLimit;
-  let label;
+  const arrow = direction === 'above' ? '↑' : '↓';
+
+  const controls = createEl('div', { className: 'diff-expand-controls' });
+
   if (limit == null) {
     // Only reachable for "below" on the last change point in a file: the
     // true distance to end-of-file isn't known until asked (see belowLimit
-    // in renderChangePoint), so the count can't be shown up front.
-    label = 'Show more below ▾';
-  } else {
-    const remaining = direction === 'above' ? loaded - limit : limit - loaded;
-    const chunk = Math.min(remaining, EXPAND_REQUEST_CAP);
-    const plural = chunk === 1 ? '' : 's';
-    label =
-      direction === 'above'
-        ? `▴ Show ${chunk} line${plural} above`
-        : `Show ${chunk} line${plural} below ▾`;
+    // in renderChangePoint), so no count -- and no "expand all" -- can be
+    // shown up front.
+    const primaryBtn = createEl('button', {
+      className: 'diff-expand-btn diff-expand-btn-primary',
+      text: `${arrow} ${EXPAND_STEP} 行`,
+    });
+    primaryBtn.type = 'button';
+    primaryBtn.addEventListener('click', () => runExpand(entry, direction, EXPAND_STEP));
+    controls.appendChild(primaryBtn);
+    row.appendChild(controls);
+    return row;
   }
 
-  const btn = createEl('button', { className: 'diff-expand-btn', text: label });
-  btn.type = 'button';
-  btn.addEventListener('click', () => runExpand(entry, direction));
-  row.appendChild(btn);
+  const remaining = direction === 'above' ? loaded - limit : limit - loaded;
+
+  if (remaining < EXPAND_STEP) {
+    const primaryBtn = createEl('button', {
+      className: 'diff-expand-btn diff-expand-btn-primary',
+      text: `${arrow} 剩 ${remaining} 行`,
+    });
+    primaryBtn.type = 'button';
+    primaryBtn.addEventListener('click', () => runExpand(entry, direction, remaining));
+    controls.appendChild(primaryBtn);
+    row.appendChild(controls);
+    return row;
+  }
+
+  const primaryBtn = createEl('button', {
+    className: 'diff-expand-btn diff-expand-btn-primary',
+    text: `${arrow} ${EXPAND_STEP} 行`,
+  });
+  primaryBtn.type = 'button';
+  primaryBtn.addEventListener('click', () => runExpand(entry, direction, EXPAND_STEP));
+
+  const allBtn = createEl('button', {
+    className: 'diff-expand-btn diff-expand-btn-all',
+    text: `全部（${remaining} 行）`,
+  });
+  allBtn.type = 'button';
+  allBtn.addEventListener('click', () => runExpand(entry, direction, remaining));
+
+  controls.append(primaryBtn, allBtn);
+  row.appendChild(controls);
   return row;
 }
 

@@ -1325,6 +1325,18 @@ input[type="checkbox"]:checked::after {
   font-size: 11px;
 }
 
+/* Primary expand button (advances EXPAND_STEP lines, or the true remaining
+ * count when fewer than that are left -- see buildExpandRow in app.js) and
+ * the "expand all" secondary sit in one flex row so they read as one
+ * control, the secondary visually subordinate to the primary: it is the
+ * occasional choice (a wide gap you actually want to see in full), not the
+ * default click. */
+.diff-expand-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .diff-expand-btn {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -1336,6 +1348,19 @@ input[type="checkbox"]:checked::after {
 
 .diff-expand-btn:hover {
   color: var(--code-fg);
+  border-color: var(--color-accent);
+}
+
+/* Subordinate to .diff-expand-btn-primary: no border of its own until
+ * hovered/focused, dimmer text -- reads as "also available" rather than
+ * competing with the primary button for the eye. */
+.diff-expand-btn-all {
+  border-color: transparent;
+  opacity: 0.7;
+}
+
+.diff-expand-btn-all:hover {
+  opacity: 1;
   border-color: var(--color-accent);
 }
 
