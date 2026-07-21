@@ -16,8 +16,8 @@ const NO_QUESTIONS_NOTE = '這次 review 沒有留下任何疑問（沒有變更
 // reader still deserves to know that's *why* the prompt is empty rather
 // than being handed a blank or misleading document.
 const ORPHANS_ONLY_NOTE =
-  '這次 review 留下的 comment 都變成了孤兒（對應的程式碼已被修改或移除），' +
-  '因此沒有可以送出的疑問。孤兒 comment 仍保留在 Markdown 匯出與畫面上。';
+  '這次 review 留下的 comment 對應的程式碼都已被修改或移除，' +
+  '因此沒有可以送出的疑問。這些紀錄仍保留在 Markdown 匯出與畫面上。';
 const FILE_LEVEL_LABEL = '(檔案層)';
 
 // ---------------------------------------------------------------------------
@@ -211,5 +211,5 @@ function formatMarkdownOrphanSection(orphans) {
     return parts.join('\n\n');
   });
 
-  return ['## 孤兒 comment', ...items].join('\n\n');
+  return ['## 歷史 comment（對應的程式碼已被修改或移除）', ...items].join('\n\n');
 }

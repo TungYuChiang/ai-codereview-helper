@@ -570,7 +570,7 @@ describe('toMarkdown', () => {
     assert.ok(!md.includes('## src/silent.js'));
   });
 
-  test('orphan comments get their own "## 孤兒 comment" section', () => {
+  test('orphan comments get their own history section', () => {
     const ctx = baseCtx({
       orphans: [
         {
@@ -585,7 +585,7 @@ describe('toMarkdown', () => {
     });
 
     const md = toMarkdown(ctx);
-    assert.ok(md.includes('## 孤兒 comment'));
+    assert.ok(md.includes('## 歷史 comment'));
     assert.ok(md.includes('src/gone.js'));
     assert.ok(md.includes('deletedFn'));
     assert.ok(md.includes('this code is gone now'));
@@ -616,7 +616,7 @@ describe('toMarkdown', () => {
       !md.includes('這次 review 沒有留下 comment。'),
       'must not claim there are no comments when an orphan comment exists',
     );
-    assert.ok(md.includes('## 孤兒 comment'));
+    assert.ok(md.includes('## 歷史 comment'));
     assert.ok(md.includes('this is a real orphaned comment'));
   });
 
