@@ -270,22 +270,22 @@ Layer 6: diff-render (deps: ui-shell-tree)           [sequential — overlaps pu
 - **Name**: 程式碼區配色主題（八款，即時切換）
 - **Deps**: visual-redesign
 - **Touches**: `public/`
-- **Status**: In Progress
+- **Status**: Completed (`67a0f4b`)；後由 Claude Code 主題取代預設 (`bcb85b3`)
 
 ### ui-expand-context
 - **來源**: 使用者於 2026-07-21 追加需求
 - **Name**: GitHub / GitLab 式的上下展開
 - **Deps**: api-file-lines, ui-sidebar
 - **Touches**: `public/`
-- **Status**: Pending
+- **Status**: Completed (`bcb85b3`)
 
 
 ## Summary
 
 | Status | Count |
 |--------|-------|
-| Pending | 1 |
-| In Progress | 1 |
-| Completed | 14 |
+| Pending | 0 |
+| In Progress | 0 |
+| Completed | 16 |
 | Failed | 0 |
 | Total | 16 |
