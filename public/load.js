@@ -7,7 +7,8 @@
 import { appState, repoSelectEl, baseSelectEl, targetSelectEl, addRepoFormEl,
   addRepoInputEl, addRepoErrorEl, treeRootEl, changepointsRootEl, filePaneHeaderEl } from './state.js';
 import { api, clearError, showError } from './api.js';
-import { saveSelection, annotationStateId, pruneAnnotationExpanded } from './prefs.js';
+import { saveSelection, annotationStateId, pruneAnnotationExpanded,
+  ORPHAN_CARD_KIND, ORPHAN_SECTION_KIND, ORPHAN_SECTION_KEY } from './prefs.js';
 import { populateRepoSelect, updateRepoSelectTitle, dedupeRepos, populateBaseTargetSelects,
   pickDefaultBase, updateRefSelectTitles, updateWorkingTreeHint } from './topbar.js';
 import { renderTree } from './tree.js';
@@ -99,9 +100,20 @@ function collectAnnotationIds(tree) {
       }
     }
   }
-  for (const orphan of tree.orphans || []) {
+  const orphans = tree.orphans || [];
+  for (const orphan of orphans) {
     if (orphan.text) ids.add(annotationStateId('comment', orphan.key));
     if (orphan.note) ids.add(annotationStateId('note', orphan.key));
+    // The card's own collapse state, which exists per orphan regardless of
+    // which of the two annotations it carries.
+    ids.add(annotationStateId(ORPHAN_CARD_KIND, orphan.key));
+  }
+  // The section's collapse state is not per-change-point, so it has nothing
+  // to survive on its own -- it stays alive exactly as long as this repo has
+  // a History comments section to open at all, and is dropped (back to the
+  // collapsed default) once the last orphan is gone.
+  if (orphans.length > 0) {
+    ids.add(annotationStateId(ORPHAN_SECTION_KIND, ORPHAN_SECTION_KEY));
   }
   return ids;
 }

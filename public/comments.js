@@ -17,7 +17,8 @@
 import { appState, dom, createEl, mainPaneEl } from './state.js';
 import { api, clearError, showError } from './api.js';
 import { buildUnifiedDiff, getPrismLanguage } from './diff.js';
-import { isAnnotationExpanded, setAnnotationExpanded, forgetAnnotationExpanded } from './prefs.js';
+import { isAnnotationExpanded, setAnnotationExpanded, forgetAnnotationExpanded,
+  ORPHAN_CARD_KIND, ORPHAN_SECTION_KIND, ORPHAN_SECTION_KEY } from './prefs.js';
 
 // ===========================================================================
 // EXTENSION POINT 4 continued -- comment + note UI, attached to every change
@@ -136,6 +137,51 @@ function closeOpenEditor(nextKey, nextKind) {
 
 let annotationDetailSeq = 0;
 
+// ---------------------------------------------------------------------------
+// The open/closed wiring itself, shared by all three collapsible blocks in
+// this file: a saved comment/note (buildAnnotationBody below), one History
+// comments card, and the History comments section as a whole. They differ
+// only in what they summarize, so only that part is per-caller (`onApply`).
+//
+// Everything else is the invariant this codebase already settled on and must
+// not diverge on:
+//
+//   * the toggle is a real <button> -- Tab reaches it, Enter/Space activate
+//     it -- carrying aria-expanded plus aria-controls pointing at the detail
+//     it owns. The chevron is aria-hidden because aria-expanded is the state
+//     assistive tech actually reads.
+//   * toggling never re-renders: it flips hidden/aria/text on nodes that
+//     already exist, so focus stays on the button the user just pressed (a
+//     re-render would destroy it and drop focus to <body>).
+//   * every explicit toggle persists (see prefs.js). The session-only
+//     `persist: false` case exists solely for annotations the user just
+//     wrote or opened an editor on, which is not something a History card or
+//     the section can be.
+// ---------------------------------------------------------------------------
+function wireCollapse({ header, chevron, detail, kind, key, onApply }) {
+  function apply(isExpanded) {
+    header.setAttribute('aria-expanded', String(isExpanded));
+    chevron.textContent = isExpanded ? '▾' : '▸';
+    detail.hidden = !isExpanded;
+    if (onApply) onApply(isExpanded);
+  }
+
+  header.addEventListener('click', () => {
+    const next = header.getAttribute('aria-expanded') !== 'true';
+    setAnnotationExpanded(kind, key, next);
+    apply(next);
+  });
+
+  apply(isAnnotationExpanded(kind, key));
+}
+
+// The chevron every one of them uses. aria-hidden -- see wireCollapse.
+function buildChevron() {
+  const chevron = createEl('span', { className: 'annotation-chevron', text: '▸' });
+  chevron.setAttribute('aria-hidden', 'true');
+  return chevron;
+}
+
 // First non-empty line + how many lines follow it. Trailing blank lines are
 // dropped first so a comment ending in a newline doesn't claim "+1 lines".
 function summarizeAnnotation(text) {
@@ -161,10 +207,7 @@ function buildAnnotationBody({ kind, key, bodyClassName, labelClassName, labelTe
   const header = createEl('button', { className: 'annotation-header' });
   header.type = 'button';
   header.setAttribute('aria-controls', detailId);
-  // aria-hidden: the chevron is redundant with aria-expanded, which is the
-  // real state for assistive tech.
-  const chevron = createEl('span', { className: 'annotation-chevron', text: '▸' });
-  chevron.setAttribute('aria-hidden', 'true');
+  const chevron = buildChevron();
   const summary = createEl('span', { className: 'annotation-summary', text: first });
   const more = createEl('span', { className: 'annotation-more', text: extra > 0 ? `+${extra} more` : '' });
   header.append(chevron, createEl('span', { className: labelClassName, text: labelText }), summary, more);
@@ -183,24 +226,21 @@ function buildAnnotationBody({ kind, key, bodyClassName, labelClassName, labelTe
   actions.append(editBtn, deleteBtn);
   detail.appendChild(actions);
 
-  function apply(isExpanded) {
-    header.setAttribute('aria-expanded', String(isExpanded));
-    chevron.textContent = isExpanded ? '▾' : '▸';
-    detail.hidden = !isExpanded;
-    // The summary is the collapsed stand-in for the text right below it --
-    // showing both at once would just be the first line twice.
-    summary.hidden = isExpanded;
-    more.hidden = isExpanded || extra === 0;
-    body.classList.toggle('annotation-collapsed', !isExpanded);
-  }
-
-  header.addEventListener('click', () => {
-    const next = header.getAttribute('aria-expanded') !== 'true';
-    setAnnotationExpanded(kind, key, next);
-    apply(next);
+  wireCollapse({
+    header,
+    chevron,
+    detail,
+    kind,
+    key,
+    onApply: (isExpanded) => {
+      // The summary is the collapsed stand-in for the text right below it --
+      // showing both at once would just be the first line twice.
+      summary.hidden = isExpanded;
+      more.hidden = isExpanded || extra === 0;
+      body.classList.toggle('annotation-collapsed', !isExpanded);
+    },
   });
 
-  apply(isAnnotationExpanded(kind, key));
   body.append(header, detail);
   return body;
 }
@@ -564,6 +604,14 @@ async function saveNote(entry, text) {
 // ===========================================================================
 
 let orphansRootEl = null;
+// The section's toggle button, kept so discardOrphan can put focus somewhere
+// sensible after the Discard button it was pressed from stops existing.
+let orphansToggleEl = null;
+// There is exactly one History comments section, so its detail element can
+// have a fixed id for the heading button's aria-controls; the cards, of
+// which there are many, number theirs (orphanDetailSeq below).
+const ORPHANS_DETAIL_ID = 'orphans-detail';
+let orphanDetailSeq = 0;
 
 function ensureOrphansRootEl() {
   if (orphansRootEl) return orphansRootEl;
@@ -577,6 +625,44 @@ function ensureOrphansRootEl() {
   return orphansRootEl;
 }
 
+// -- Collapsing ------------------------------------------------------------
+// Two levels, both closed by default, both persisted per repo through the
+// same store the saved-annotation collapse uses (see the ORPHAN_* kinds in
+// prefs.js and wireCollapse above).
+//
+// The section, because it is an appendix to work the user has usually
+// already done. Its cards are tall -- each one carries a multi-line code
+// snapshot -- so on a file with six of them the history was several screens
+// of material the reader had already dealt with, permanently parked under
+// the diff they came here to read. Collapsed, the whole thing is one row
+// that still states the count, so it advertises itself without costing
+// anything; the count is the part that actually needs to be always-visible,
+// not the snapshots.
+//
+// Each card, because "open the section" and "read one particular entry" are
+// different intentions. Expanding the section on this file used to mean
+// committing to all six snapshots at once with no way to scan them; with the
+// cards closed it opens into an index, one row each, and the one you want is
+// one more click. The rows summarize with the SAME idiom as a collapsed
+// comment -- first non-empty line of the annotation text, plus "+N more" --
+// rather than with the meta row alone, which reads as the obvious choice
+// until you notice that the section is now scoped to the open file: every
+// card in the primary group then shows the SAME file path, so the meta row
+// distinguishes cards only by function name and often not even by that.
+// What actually tells two history entries apart is what you wrote on them.
+// The meta row stays in the header regardless -- it costs nothing there, and
+// it is the only label the "no longer in this diff" group has.
+//
+// The two levels cannot fight: a card's header lives inside the section's
+// detail element, so an expanded card inside a collapsed section is simply
+// not rendered visible, and reopening the section restores exactly the cards
+// that were open. Neither level writes the other's state.
+//
+// No keyboard shortcut: every single-key binding is spoken for
+// (j/k/x/u/c/f/b/1/2/?, see handleGlobalKeydown in keyboard.js), and this is
+// an appendix -- it does not deserve a hijacked key. Both toggles are real
+// buttons in normal document order, so Tab + Enter reaches them.
+//
 // -- Scoping ---------------------------------------------------------------
 // This section is an appendix to the right pane, and the right pane shows
 // exactly one file (see pane.js's openFile). Rendering every orphan in the
@@ -613,13 +699,30 @@ export function renderOrphans() {
   }
   root.hidden = false;
 
-  root.appendChild(
-    createEl('h2', {
-      className: 'orphans-heading',
+  // The <h2> stays the heading for the document outline; the control inside
+  // it is the button (the ordinary accordion shape), so the section is still
+  // announced as a heading and is still activatable from the keyboard.
+  const heading = createEl('h2', { className: 'orphans-heading' });
+  const toggle = createEl('button', { className: 'orphans-toggle' });
+  toggle.type = 'button';
+  toggle.setAttribute('aria-controls', ORPHANS_DETAIL_ID);
+  const chevron = buildChevron();
+  toggle.append(
+    chevron,
+    createEl('span', {
+      className: 'orphans-title',
       text: `History comments (${forOpenFile.length + unreachable.length})`,
     }),
   );
-  root.appendChild(
+  heading.appendChild(toggle);
+  root.appendChild(heading);
+  orphansToggleEl = toggle;
+
+  const body = createEl('div', { className: 'orphans-body' });
+  body.id = ORPHANS_DETAIL_ID;
+  root.appendChild(body);
+
+  body.appendChild(
     createEl('p', {
       className: 'orphans-note',
       text:
@@ -630,11 +733,11 @@ export function renderOrphans() {
   );
 
   for (const orphan of forOpenFile) {
-    root.appendChild(buildOrphanCard(orphan));
+    body.appendChild(buildOrphanCard(orphan));
   }
 
   if (unreachable.length > 0) {
-    root.appendChild(
+    body.appendChild(
       createEl('p', {
         className: 'orphans-note orphans-subnote',
         // Phrased as "no longer in this diff" rather than "no longer differs
@@ -650,9 +753,17 @@ export function renderOrphans() {
       }),
     );
     for (const orphan of unreachable) {
-      root.appendChild(buildOrphanCard(orphan));
+      body.appendChild(buildOrphanCard(orphan));
     }
   }
+
+  wireCollapse({
+    header: toggle,
+    chevron,
+    detail: body,
+    kind: ORPHAN_SECTION_KIND,
+    key: ORPHAN_SECTION_KEY,
+  });
 }
 
 // Parses a stored diffText snapshot back into the `line` shape diff.js
@@ -708,42 +819,78 @@ function buildSnapshotDiff(orphan) {
   return wrap;
 }
 
+// The meta row doubles as the card's collapse toggle -- see the Collapsing
+// note above for why the summary next to it is the annotation's first line
+// rather than the meta row alone. Comment and note are summarized together
+// (joined, in the order they render below) so "+N more" counts everything
+// the card is actually hiding, not just the block the first line came from.
 function buildOrphanCard(orphan) {
   const card = createEl('div', { className: 'orphan-card' });
   card.dataset.key = orphan.key;
+  const detailId = `orphan-detail-${(orphanDetailSeq += 1)}`;
+  const { first, extra } = summarizeAnnotation(
+    [orphan.text, orphan.note].filter(Boolean).join('\n'),
+  );
 
-  const meta = createEl('div', { className: 'orphan-meta' });
-  meta.appendChild(createEl('span', { className: 'orphan-file', text: orphan.filePath || '(unknown file)' }));
+  const header = createEl('button', { className: 'orphan-header' });
+  header.type = 'button';
+  header.setAttribute('aria-controls', detailId);
+  const chevron = buildChevron();
+  header.append(
+    chevron,
+    createEl('span', { className: 'orphan-file', text: orphan.filePath || '(unknown file)' }),
+  );
   if (orphan.functionName) {
-    meta.appendChild(createEl('span', { className: 'orphan-fn', text: orphan.functionName }));
+    header.appendChild(createEl('span', { className: 'orphan-fn', text: orphan.functionName }));
   }
-  card.appendChild(meta);
+  const summary = createEl('span', { className: 'annotation-summary', text: first });
+  const more = createEl('span', { className: 'annotation-more', text: extra > 0 ? `+${extra} more` : '' });
+  header.append(summary, more);
+  card.appendChild(header);
 
-  card.appendChild(buildSnapshotDiff(orphan));
+  const detail = createEl('div', { className: 'orphan-detail' });
+  detail.id = detailId;
+  detail.appendChild(buildSnapshotDiff(orphan));
 
   // orphan.text/orphan.note are independently nullable (see state.js
   // buildAnnotated) -- an orphan can carry a comment, a note, or both, so
   // each gets its own labeled block only when present.
   if (orphan.text) {
-    card.appendChild(createEl('span', { className: 'comment-label', text: 'Comment' }));
-    card.appendChild(createEl('p', { className: 'orphan-comment', text: orphan.text }));
+    detail.appendChild(createEl('span', { className: 'comment-label', text: 'Comment' }));
+    detail.appendChild(createEl('p', { className: 'orphan-comment', text: orphan.text }));
   }
   if (orphan.note) {
-    card.appendChild(createEl('span', { className: 'note-label', text: 'Note' }));
-    card.appendChild(createEl('p', { className: 'orphan-comment orphan-note', text: orphan.note }));
+    detail.appendChild(createEl('span', { className: 'note-label', text: 'Note' }));
+    detail.appendChild(createEl('p', { className: 'orphan-comment orphan-note', text: orphan.note }));
   }
 
   const actions = createEl('div', { className: 'orphan-actions' });
   const discardBtn = createEl('button', { className: 'comment-btn comment-btn-danger', text: 'Discard' });
   discardBtn.type = 'button';
-  discardBtn.addEventListener('click', () => discardOrphan(orphan.key, card));
+  discardBtn.addEventListener('click', () => discardOrphan(orphan.key));
   actions.append(discardBtn, createEl('span', { className: 'orphan-keep-hint', text: 'leave it alone to keep it' }));
-  card.appendChild(actions);
+  detail.appendChild(actions);
+  card.appendChild(detail);
+
+  wireCollapse({
+    header,
+    chevron,
+    detail,
+    kind: ORPHAN_CARD_KIND,
+    key: orphan.key,
+    onApply: (isExpanded) => {
+      // Same rule as a collapsed annotation: the summary stands in for the
+      // text below it, so it goes away once that text is on screen.
+      summary.hidden = isExpanded;
+      more.hidden = isExpanded || extra === 0;
+      card.classList.toggle('orphan-collapsed', !isExpanded);
+    },
+  });
 
   return card;
 }
 
-async function discardOrphan(key, cardEl) {
+async function discardOrphan(key) {
   clearError();
   try {
     await api.discardOrphan(appState.repo, key);
@@ -755,11 +902,24 @@ async function discardOrphan(key, cardEl) {
     appState.tree.orphans = appState.tree.orphans.filter((o) => o.key !== key);
   }
   // Discard removes both annotation types for this key (see state.js
-  // discardOrphan), so both collapse entries go with them.
+  // discardOrphan), so both collapse entries go with them -- and so does the
+  // card's own, which would otherwise sit in localStorage until the next
+  // load's prune.
   forgetAnnotationExpanded('comment', key);
   forgetAnnotationExpanded('note', key);
-  cardEl.remove();
-  if (orphansRootEl && (!appState.tree || appState.tree.orphans.length === 0)) {
-    orphansRootEl.hidden = true;
-  }
+  forgetAnnotationExpanded(ORPHAN_CARD_KIND, key);
+
+  // Re-render rather than just removing the one card: the heading now states
+  // a count, and with the section collapsible that count is the only thing
+  // an unopened section shows, so leaving it stale is no longer a cosmetic
+  // detail. renderOrphans also re-derives the "no longer in this diff" group
+  // and re-hides the whole section when the last orphan goes, which the old
+  // remove-the-node path had to special-case.
+  const wasFocused = orphansRootEl && orphansRootEl.contains(document.activeElement);
+  renderOrphans();
+  // The Discard button that had focus does not exist any more. Send focus to
+  // the section's toggle (still the same region the user was working in)
+  // instead of letting it fall to <body>, where Tab would restart from the
+  // top of the document.
+  if (wasFocused && orphansToggleEl && !orphansRootEl.hidden) orphansToggleEl.focus();
 }

@@ -72,7 +72,10 @@ export function toggleSidebar() {
 
 // ===========================================================================
 // Annotation collapse -- per-comment / per-note "show only a summary line"
-// state, rendered by comments.js's renderCommentView/renderNoteView.
+// state, rendered by comments.js's renderCommentView/renderNoteView. Also
+// carries the History comments section's and its cards' open/closed state,
+// which are the same kind of state under different `kind`s -- see the
+// ORPHAN_* constants below.
 //
 // Two sets, deliberately not one:
 //
@@ -96,6 +99,28 @@ export function toggleSidebar() {
 // ===========================================================================
 
 export const ANNOTATION_EXPANDED_KEY_PREFIX = 'lcr.annotationExpanded.';
+
+// Two more `kind`s riding the same per-repo set, added when the History
+// comments section became collapsible (see renderOrphans in comments.js).
+// They are not comments or notes, but they are the same *thing*: "this block
+// is expanded", per repo, persisted only on an explicit header click, pruned
+// by the same pass. Giving them their own localStorage key and their own
+// read/write/prune trio would have duplicated all of the above to store one
+// more boolean per id, and would have needed its own repo-switch reload --
+// so they extend this unit instead of paralleling it.
+//
+//   ORPHAN_CARD_KIND    -- key is the orphan's change-point key, exactly like
+//                          a comment/note id, so pruning already works.
+//   ORPHAN_SECTION_KIND -- the whole section, which is not per-change-point;
+//                          ORPHAN_SECTION_KEY is the one fixed id it uses.
+//                          load.js keeps it alive while the repo has any
+//                          orphan at all (see collectAnnotationIds).
+//
+// They say "orphan" for the same reason every other identifier in this
+// feature does -- see the naming note in comments.js's history section.
+export const ORPHAN_CARD_KIND = 'orphanCard';
+export const ORPHAN_SECTION_KIND = 'orphanSection';
+export const ORPHAN_SECTION_KEY = 'all';
 
 const expanded = new Set();
 let persisted = new Set();

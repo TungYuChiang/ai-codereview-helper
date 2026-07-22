@@ -1780,11 +1780,15 @@ input[type="checkbox"]:checked::after {
 
 /* ====================================================================== */
 /* BEGIN annotation collapse -- saved comment/note collapsed to one row.   */
-/* Self-contained block: .annotation-header / -chevron / -summary /        */
-/* -more / -detail / .annotation-collapsed are used nowhere else. See      */
-/* buildAnnotationBody in comments.js. NOTE: distinct from the older       */
-/* .annotation-slot-expanded above, which is about flex row width, not     */
-/* about this open/closed state.                                           */
+/* .annotation-header / -detail / .annotation-collapsed belong to          */
+/* buildAnnotationBody in comments.js alone. The three presentation atoms  */
+/* -chevron / -summary / -more are shared with the History comments        */
+/* toggles further down (.orphans-toggle and .orphan-header) -- same marks */
+/* meaning the same thing, and the whole point of that section's collapse  */
+/* is that it reads as the collapse the user already knows, so they are    */
+/* deliberately NOT re-declared under orphan-* names. NOTE: distinct from  */
+/* the older .annotation-slot-expanded above, which is about flex row      */
+/* width, not about this open/closed state.                                */
 /*                                                                         */
 /* The header is a real <button> reset back to looking like a text row --  */
 /* it must be Tab-reachable and Enter/Space-activatable, which a styled    */
@@ -1878,11 +1882,56 @@ input[type="checkbox"]:checked::after {
   display: none;
 }
 
+/* The heading is the section's collapse toggle: the <h2> keeps the
+ * document outline, the <button> inside it is the control (see
+ * renderOrphans). The button is reset back to looking like the heading text
+ * it replaced -- the section must not suddenly look like a form control --
+ * while staying Tab-reachable and Enter/Space-activatable. The global
+ * :focus-visible ring is untouched. */
 .orphans-heading {
-  margin: 0 0 4px 0;
+  margin: 0;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--color-note);
+}
+
+.orphans-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  text-align: left;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.orphans-toggle:hover {
+  border: none;
+  color: inherit;
+}
+
+.orphans-toggle:hover .annotation-chevron {
+  color: var(--color-fg-muted);
+}
+
+/* Everything the heading collapses: the explanatory note, both groups of
+ * cards, and the divider between them. The 4px used to be the heading's own
+ * margin-bottom; it moves here so a collapsed section is exactly one row
+ * with no trailing gap under it. */
+.orphans-body {
+  margin-top: 4px;
+}
+
+.orphans-body[hidden],
+.orphan-detail[hidden] {
+  display: none;
 }
 
 .orphans-note {
@@ -1914,17 +1963,61 @@ input[type="checkbox"]:checked::after {
   margin-bottom: 0;
 }
 
-.orphan-meta {
+/* The card's meta row, which is also its collapse toggle (was .orphan-meta,
+ * a plain <div>, before the card became collapsible). Same button reset as
+ * .orphans-toggle above and for the same reason. min-width: 0 on the row and
+ * on .orphan-file is what lets the summary's ellipsis actually engage -- a
+ * flex item's default min-width: auto would let a long path push the row
+ * wider than the card instead. */
+.orphan-header {
   display: flex;
+  align-items: baseline;
   gap: 8px;
-  margin-bottom: 6px;
-  font-family: var(--font-mono);
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  text-align: left;
   font-size: 11.5px;
+  color: var(--color-fg-muted);
+  cursor: pointer;
+}
+
+.orphan-header:hover {
+  border: none;
   color: var(--color-fg-muted);
 }
 
+.orphan-header:hover .annotation-chevron {
+  color: var(--color-fg-muted);
+}
+
+/* Mono lives on the two identifier spans rather than on the row, so the
+ * annotation summary sharing that row stays in the UI font -- it is prose
+ * the user wrote, not a path or a symbol. */
+.orphan-file {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+}
+
 .orphan-fn {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
   color: var(--color-fg-dim);
+}
+
+.orphan-detail {
+  margin-top: 6px;
 }
 
 /* The code snapshot on a history card. This rule is only a frame:
