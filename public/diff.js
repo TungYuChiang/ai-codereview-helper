@@ -340,7 +340,17 @@ function buildAnchorCell(line, anchorCtx) {
   btn.addEventListener('click', (e) => {
     e.preventDefault();
     const entry = anchorCtx.entry;
-    const range = resolveAnchorRange(entry, index, e.shiftKey);
+    // A live text selection spanning diff rows wins over the clicked line.
+    // Selecting the lines you mean and then asking to comment is the gesture
+    // people arrive with, and the first version of this unit ignored it: you
+    // could select ten lines, click, and get "comment on line 319" with
+    // nothing to say the selection had been dropped.
+    //
+    // This does not make selecting text *do* anything by itself -- copying
+    // code is untouched, which was the original objection to reading the
+    // selection at all. It is consulted only at the moment you explicitly
+    // ask for a comment.
+    const range = selectionAnchorRange(entry) ?? resolveAnchorRange(entry, index, e.shiftKey);
     entry.anchorPendingStart = null;
     if (!e.shiftKey) entry.anchorLastPick = index;
     anchorUi.openEditor(entry, range);
@@ -380,6 +390,67 @@ function resolveAnchorRange(entry, index, shiftKey) {
     ? entry.anchorLastPick ?? entry.anchorPendingStart ?? index
     : entry.anchorPendingStart ?? index;
   return { start: Math.min(origin, index), end: Math.max(origin, index) };
+}
+
+// The anchor range implied by the current text selection, or null when there
+// isn't one to speak of.
+//
+// Only rows this change point owns are considered, so a selection dragged
+// across two change points anchors within the one whose gutter you clicked
+// rather than producing a range that spans a boundary the data model has no
+// way to express.
+//
+// Context lines are skipped for free: anchorRows only ever holds rows that
+// have an index, and only changed lines get one (diffText is built from
+// changedLines -- see model.js). So selecting a whole screen of code anchors
+// to the changed lines inside it, which is the only thing an anchor can
+// address.
+function selectionAnchorRange(entry) {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
+  if (!entry.anchorRows) return null;
+
+  let min = null;
+  let max = null;
+  for (const [index, { cell }] of entry.anchorRows) {
+    const row = cell.parentElement;
+    if (!row || !selectionCoversRow(selection, row)) continue;
+    if (min === null || index < min) min = index;
+    if (max === null || index > max) max = index;
+  }
+  return min === null ? null : { start: min, end: max };
+}
+
+// True when the selection actually covers some of `row`'s content.
+//
+// containsNode(row, true) alone is not enough: a drag that stops at the very
+// start of the next line still reports that line as partially contained, so a
+// selection of 308-318 would anchor 308-319 -- an off-by-one that only shows
+// up on the last line and would be easy to ship. Comparing boundary points
+// against a range over the row's own contents asks the precise question
+// instead: does the selection end after this row begins, AND begin before
+// this row ends.
+function selectionCoversRow(selection, row) {
+  const rowRange = document.createRange();
+  rowRange.selectNodeContents(row);
+  try {
+    for (let i = 0; i < selection.rangeCount; i++) {
+      const sel = selection.getRangeAt(i);
+      // Naming per the DOM spec, which is the opposite way round from how the
+      // constants read: END_TO_START compares *this* range's start against
+      // sourceRange's end, and START_TO_END compares this range's end against
+      // sourceRange's start.
+      const startsBeforeRowEnds = sel.compareBoundaryPoints(Range.END_TO_START, rowRange) < 0;
+      const endsAfterRowStarts = sel.compareBoundaryPoints(Range.START_TO_END, rowRange) > 0;
+      if (startsBeforeRowEnds && endsAfterRowStarts) return true;
+    }
+  } catch {
+    // Ranges in different documents throw WrongDocumentError. Nothing here can
+    // produce that, but a selection is user-driven state and this runs on
+    // every anchor click -- degrading to "no selection" is always safe.
+    return false;
+  }
+  return false;
 }
 
 // Roving tabindex: the focused button becomes the single tab stop, so leaving
