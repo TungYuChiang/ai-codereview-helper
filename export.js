@@ -28,16 +28,92 @@ const FILE_LEVEL_LABEL = '(檔案層)';
 // just render it differently.
 // ---------------------------------------------------------------------------
 
+// One entry per COMMENT, not per change point: a change point can carry a
+// whole-change-point comment and any number of anchored ones (a comment with
+// an extra `anchor` field -- see state.js's setAnchoredComment), and each of
+// them is a separate question that deserves its own numbered section rather
+// than being stapled under a shared diff. The unanchored one comes first so
+// its rendering, and its position, are exactly what they were before anchors
+// existed.
 function collectCommentedEntries(files) {
   const entries = [];
   for (const file of files ?? []) {
     for (const group of file.groups ?? []) {
       for (const changePoint of group.changePoints ?? []) {
-        if (changePoint.comment) entries.push({ file, group, changePoint });
+        if (changePoint.comment) {
+          entries.push({ file, group, changePoint, text: changePoint.comment, anchor: null });
+        }
+        for (const anchored of changePoint.anchoredComments ?? []) {
+          entries.push({
+            file,
+            group,
+            changePoint,
+            text: anchored.text,
+            anchor: { start: anchored.anchorStart, end: anchored.anchorEnd },
+          });
+        }
       }
     }
   }
   return entries;
+}
+
+// ---------------------------------------------------------------------------
+// Anchor resolution — shared by both export formats.
+//
+// An anchor is a 0-based inclusive index range into
+// `changePoint.diffText.split('\n')`: the change point's CHANGED lines only
+// (model.js builds diffText from `lines.filter(type !== ' ')`). `lines`, by
+// contrast, also carries context lines and is what both formats render. So
+// resolving an anchor means walking `lines` and counting only the changed
+// ones -- the k-th changed line in `lines` is diffText line k.
+//
+// diffText is the authority for the anchored TEXT (it is literally the string
+// the indices address, and it is inside changePointKey, so it cannot have
+// drifted while the key survives). `lines` is consulted only for the two
+// things diffText deliberately does not store: real file line numbers, and
+// the surrounding context. If `lines` is missing or malformed, the text still
+// resolves and only the line-number label degrades to absent -- never to a
+// guess, per the same rule state.js applies to snapshots.
+// ---------------------------------------------------------------------------
+
+function anchoredDiffLines(changePoint, anchor) {
+  const all = (changePoint.diffText ?? '').split('\n');
+  return all.slice(anchor.start, anchor.end + 1);
+}
+
+// Positions within `changePoint.lines` covered by the anchor, as a Set.
+function anchoredLinePositions(changePoint, anchor) {
+  const positions = new Set();
+  let changedIndex = 0;
+  (changePoint.lines ?? []).forEach((line, position) => {
+    if (line.type === ' ') return;
+    if (changedIndex >= anchor.start && changedIndex <= anchor.end) positions.add(position);
+    changedIndex += 1;
+  });
+  return positions;
+}
+
+// "檔案第 24 行" / "檔案第 23-24 行" / "舊版第 20 行" (a deleted line has no
+// new-side number at all, and claiming one would be inventing it) / '' when
+// `lines` cannot answer.
+function anchorLineLabel(changePoint, anchor) {
+  const lines = changePoint.lines ?? [];
+  const covered = [...anchoredLinePositions(changePoint, anchor)].map((p) => lines[p]).filter(Boolean);
+  if (covered.length === 0) return '';
+
+  const newNumbers = covered.map((line) => line.newLine).filter((n) => n != null);
+  if (newNumbers.length > 0) return `檔案第 ${formatRange(newNumbers)} 行`;
+
+  const oldNumbers = covered.map((line) => line.oldLine).filter((n) => n != null);
+  if (oldNumbers.length > 0) return `舊版第 ${formatRange(oldNumbers)} 行（此行已被刪除）`;
+  return '';
+}
+
+function formatRange(numbers) {
+  const min = Math.min(...numbers);
+  const max = Math.max(...numbers);
+  return min === max ? String(min) : `${min}-${max}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +158,7 @@ export function toClaudePrompt(ctx) {
   return sections.join('\n\n---\n\n');
 }
 
-function formatClaudeEntry({ file, group, changePoint }, index, repoPath) {
+function formatClaudeEntry({ file, group, changePoint, text, anchor }, index, repoPath) {
   const parts = [`## ${index}. ${join(repoPath, file.path)}`];
 
   // Only the function's name and diff are kept -- not its source. The
@@ -94,14 +170,55 @@ function formatClaudeEntry({ file, group, changePoint }, index, repoPath) {
     parts.push(`所在 function：${group.name}`);
   }
 
-  parts.push(`Diff：\n${fence(formatRawLines(changePoint.lines), 'diff')}`);
-  parts.push(`我的 comment：\n${changePoint.comment}`);
+  if (anchor) {
+    // The whole reason anchoring exists: a comment saying "is nm always set
+    // here?" against a 67-line change point makes the reader guess which line
+    // "here" is. So the anchored lines are shown TWICE, deliberately --
+    //
+    //   1. alone, in their own fence. This is the unambiguous answer to
+    //      "which line", and it is first because it is the thing the comment
+    //      is actually about. Nothing has to be searched for.
+    //   2. marked in place inside the full diff, because a line without its
+    //      surrounding change is often unanswerable ("is nm always set" needs
+    //      to see whether anything above assigns it).
+    //
+    // Plus the real file line number where one exists, so the reader can open
+    // the file at the right place instead of scanning it.
+    const anchoredText = anchoredDiffLines(changePoint, anchor).join('\n');
+    const label = anchorLineLabel(changePoint, anchor);
+    const count = anchor.end - anchor.start + 1;
+    parts.push(
+      `我的 comment 指向下面這 ${count} 行${label ? `（${label}）` : ''}：\n` +
+        fence(anchoredText, 'diff'),
+    );
+    parts.push(
+      '同一段 diff 的完整內容，行首 » 標記的就是上面那 ' +
+        `${count} 行：\n${fence(formatMarkedLines(changePoint, anchor), 'diff')}`,
+    );
+  } else {
+    parts.push(`Diff：\n${fence(formatRawLines(changePoint.lines), 'diff')}`);
+  }
+
+  parts.push(`我的 comment：\n${text}`);
 
   return parts.join('\n\n');
 }
 
 function formatRawLines(lines) {
   return (lines ?? []).map((line) => `${line.type}${line.text}`).join('\n');
+}
+
+// The change point's own diff with a two-character pointer gutter: '» ' on
+// every line the anchor covers, two spaces on every other line so the diff
+// stays column-aligned and readable. It costs the ```diff fence its exact
+// syntax highlighting on those rows, which is a cheap price for a pointer
+// that survives being read as plain text -- and the legend above the block
+// says what the marker means, so nothing is left to inference.
+function formatMarkedLines(changePoint, anchor) {
+  const positions = anchoredLinePositions(changePoint, anchor);
+  return (changePoint.lines ?? [])
+    .map((line, position) => `${positions.has(position) ? '» ' : '  '}${line.type}${line.text}`)
+    .join('\n');
 }
 
 // Wrap `content` in a fenced code block whose backtick run is guaranteed to
@@ -169,7 +286,8 @@ function formatMarkdownFile(file) {
 // change point would be invisible in the Claude prompt.
 function formatMarkdownGroup(group) {
   const annotated = (group.changePoints ?? []).filter(
-    (changePoint) => changePoint.comment || changePoint.note,
+    (changePoint) =>
+      changePoint.comment || changePoint.note || (changePoint.anchoredComments ?? []).length > 0,
   );
   if (annotated.length === 0) return null;
 
@@ -189,7 +307,24 @@ function formatMarkdownChangePoint(group, changePoint) {
   // paragraph.
   if (changePoint.comment) parts.push(changePoint.comment);
   if (changePoint.note) parts.push(`**Note:** ${changePoint.note}`);
+  // Anchored comments after both, each re-quoting just the lines it points at
+  // under its own labeled heading. The full change-point quote is already
+  // above, so this is not a duplicate for its own sake: it is the difference
+  // between "somewhere in these seven lines" and "this line", which is the
+  // only thing an anchored comment adds over an unanchored one and therefore
+  // the one thing the note must not lose on the way into Obsidian.
+  for (const anchored of changePoint.anchoredComments ?? []) {
+    parts.push(formatMarkdownAnchored(changePoint, anchored));
+  }
   return parts.join('\n\n');
+}
+
+function formatMarkdownAnchored(changePoint, anchored) {
+  const anchor = { start: anchored.anchorStart, end: anchored.anchorEnd };
+  const label = anchorLineLabel(changePoint, anchor);
+  const heading = `**Anchored${label ? ` — ${label}` : ''}:**`;
+  const quote = quoteDiffText(anchoredDiffLines(changePoint, anchor).join('\n'));
+  return [heading, quote, anchored.text].join('\n\n');
 }
 
 function quoteDiffText(diffText) {
@@ -211,6 +346,26 @@ function formatMarkdownOrphanSection(orphans) {
     // filters these out entirely) both.
     if (orphan.text) parts.push(orphan.text);
     if (orphan.note) parts.push(`**Note:** ${orphan.note}`);
+    // An orphan carries the same diffText snapshot its anchors index into
+    // (see state.js buildAnnotated), so the lines an anchored comment pointed
+    // at are still recoverable here even though the code itself is gone --
+    // which is the entire value of keeping history at all. No file line
+    // label: the snapshot has no line numbers by design, and inventing one
+    // against a file that has since changed would be worse than none.
+    for (const anchored of orphan.anchored ?? []) {
+      parts.push(
+        [
+          '**Anchored:**',
+          quoteDiffText(
+            anchoredDiffLines({ diffText: orphan.diffText }, {
+              start: anchored.anchorStart,
+              end: anchored.anchorEnd,
+            }).join('\n'),
+          ),
+          anchored.text,
+        ].join('\n\n'),
+      );
+    }
     return parts.join('\n\n');
   });
 

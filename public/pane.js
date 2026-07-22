@@ -114,6 +114,12 @@ export function renderChangePointTreeRow(changePoint, group, file, groupKey, par
     noteBodyEl: null,
     gapAbove: null,
     gapBelow: null,
+    // Line-anchoring state -- see EXTENSION POINT 6 in diff.js. anchorRows is
+    // rebuilt by every renderChangePointContent; the other two remember the
+    // in-progress anchor gesture (shift-click origin / Shift+Arrow range).
+    anchorRows: null,
+    anchorPendingStart: null,
+    anchorLastPick: null,
   });
   appState.order.push(key);
 }
@@ -353,6 +359,12 @@ export function openFile(path) {
       entry.noteBodyEl = null;
       entry.gapAbove = null;
       entry.gapBelow = null;
+      // Anchor state is per-render DOM (diff.js rebuilds anchorRows on every
+      // renderChangePointContent) plus a per-change-point gesture memory --
+      // both belong to the pane that is going away, same as the fields above.
+      entry.anchorRows = null;
+      entry.anchorPendingStart = null;
+      entry.anchorLastPick = null;
     }
     if (dom.scrollObserver) {
       dom.scrollObserver.disconnect();
@@ -418,11 +430,15 @@ function renderFilePane(path) {
     entry.noteBodyEl = null;
     entry.gapAbove = null;
     entry.gapBelow = null;
+    entry.anchorRows = null;
+    entry.anchorPendingStart = null;
+    entry.anchorLastPick = null;
   }
   if (appState.isEditing) {
     appState.isEditing = false;
     appState.editingKey = null;
     appState.editingKind = null;
+    appState.editingAnchor = null;
   }
   if (dom.scrollObserver) {
     dom.scrollObserver.disconnect();

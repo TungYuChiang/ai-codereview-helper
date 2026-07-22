@@ -15,6 +15,7 @@ import {
   setNote,
   deleteNote,
   discardOrphan,
+  setAnchoredComment,
 } from '../state.js';
 
 const ORIGINAL_LCR_HOME = process.env.LCR_HOME;
@@ -1290,5 +1291,250 @@ describe('invalidation rule — realistic amend scenarios', () => {
       f.groups.some((g) => g.changePoints.some((c) => c.id === beforeKey)),
     );
     assert.equal(stillPresent, false);
+  });
+});
+
+// ===========================================================================
+// Anchored comments — a comment attached to a line (or line range) INSIDE a
+// change point, addressed as an index range into that change point's own
+// diffText lines. See state.js's setAnchoredComment block comment for why an
+// index into diffText is NOT the rejected "進度只存行號" design.
+// ===========================================================================
+
+describe('anchored comments', () => {
+  // Four diffText lines, so indices 0..3 are addressable.
+  const FOUR_LINE_DIFF = '-const a = 1;\n+const a = 2;\n+const nm = node.name;\n+if (!nm) return null;';
+
+  function ctx(overrides = {}) {
+    return {
+      filePath: 'src/auth.js',
+      functionName: 'handleLogin',
+      diffText: FOUR_LINE_DIFF,
+      ...overrides,
+    };
+  }
+
+  function fourLineTree() {
+    const changePoint = cp({ diffText: FOUR_LINE_DIFF });
+    return [fileNode({ groups: [groupNode({ changePoints: [changePoint], total: 1 })], total: 1 })];
+  }
+
+  async function keyOf(tree) {
+    return (await annotate(REPO, tree)).files[0].groups[0].changePoints[0].id;
+  }
+
+  test('a single-line anchored comment comes back on its change point', async () => {
+    const tree = fourLineTree();
+    const key = await keyOf(tree);
+    await setAnchoredComment(REPO, key, { start: 2, end: 2 }, 'is nm always set here?', ctx());
+
+    const changePoint = (await annotate(REPO, tree)).files[0].groups[0].changePoints[0];
+    assert.deepEqual(changePoint.anchoredComments, [
+      { anchorStart: 2, anchorEnd: 2, text: 'is nm always set here?' },
+    ]);
+  });
+
+  test('several anchored comments can live on ONE change point, sorted by anchor', async () => {
+    const tree = fourLineTree();
+    const key = await keyOf(tree);
+    await setAnchoredComment(REPO, key, { start: 3, end: 3 }, 'third', ctx());
+    await setAnchoredComment(REPO, key, { start: 0, end: 1 }, 'first', ctx());
+    await setAnchoredComment(REPO, key, { start: 2, end: 2 }, 'second', ctx());
+
+    const changePoint = (await annotate(REPO, tree)).files[0].groups[0].changePoints[0];
+    assert.deepEqual(changePoint.anchoredComments, [
+      { anchorStart: 0, anchorEnd: 1, text: 'first' },
+      { anchorStart: 2, anchorEnd: 2, text: 'second' },
+      { anchorStart: 3, anchorEnd: 3, text: 'third' },
+    ]);
+  });
+
+  test('writing the same anchor twice edits in place rather than appending a duplicate', async () => {
+    const tree = fourLineTree();
+    const key = await keyOf(tree);
+    await setAnchoredComment(REPO, key, { start: 1, end: 1 }, 'first draft', ctx());
+    await setAnchoredComment(REPO, key, { start: 1, end: 1 }, 'second draft', ctx());
+
+    const changePoint = (await annotate(REPO, tree)).files[0].groups[0].changePoints[0];
+    assert.deepEqual(changePoint.anchoredComments, [
+      { anchorStart: 1, anchorEnd: 1, text: 'second draft' },
+    ]);
+  });
+
+  test('empty text deletes only that anchor, leaving the others alone', async () => {
+    const tree = fourLineTree();
+    const key = await keyOf(tree);
+    await setAnchoredComment(REPO, key, { start: 0, end: 0 }, 'keep me', ctx());
+    await setAnchoredComment(REPO, key, { start: 2, end: 2 }, 'delete me', ctx());
+    await setAnchoredComment(REPO, key, { start: 2, end: 2 }, '   ', ctx());
+
+    const changePoint = (await annotate(REPO, tree)).files[0].groups[0].changePoints[0];
+    assert.deepEqual(changePoint.anchoredComments, [
+      { anchorStart: 0, anchorEnd: 0, text: 'keep me' },
+    ]);
+  });
+
+  test('deleting the last anchored comment removes the key entirely, leaving no empty array behind', async () => {
+    const tree = fourLineTree();
+    const key = await keyOf(tree);
+    await setAnchoredComment(REPO, key, { start: 0, end: 0 }, 'temporary', ctx());
+    await setAnchoredComment(REPO, key, { start: 0, end: 0 }, '', ctx());
+
+    const state = await loadState(REPO);
+    assert.equal(Object.hasOwn(state.anchoredComments ?? {}, key), false);
+  });
+
+  test('a change point with no anchored comments reports an empty array, not undefined', async () => {
+    const result = await annotate(REPO, fourLineTree());
+    assert.deepEqual(result.files[0].groups[0].changePoints[0].anchoredComments, []);
+  });
+
+  test('rejects an anchor outside the change point diffText it is written against', async () => {
+    const tree = fourLineTree();
+    const key = await keyOf(tree);
+    await assert.rejects(
+      () => setAnchoredComment(REPO, key, { start: 2, end: 4 }, 'off the end', ctx()),
+      /anchor/,
+    );
+    await assert.rejects(
+      () => setAnchoredComment(REPO, key, { start: -1, end: 0 }, 'before the start', ctx()),
+      /anchor/,
+    );
+    await assert.rejects(
+      () => setAnchoredComment(REPO, key, { start: 2, end: 1 }, 'inverted', ctx()),
+      /anchor/,
+    );
+  });
+
+  test('survives an amend that shifts line numbers but does not touch the change point', async () => {
+    const tree = fourLineTree();
+    const key = await keyOf(tree);
+    await setAnchoredComment(REPO, key, { start: 2, end: 3 }, 'is nm always set here?', ctx());
+
+    // Same content, different line numbers -- exactly the amend case
+    // changePointKey is designed to survive (newStart/newEnd are excluded
+    // from the hash).
+    const afterTree = [
+      fileNode({
+        groups: [
+          groupNode({
+            startLine: 900,
+            endLine: 930,
+            changePoints: [cp({ diffText: FOUR_LINE_DIFF, newStart: 905, newEnd: 908 })],
+            total: 1,
+          }),
+        ],
+        total: 1,
+      }),
+    ];
+
+    const after = await annotate(REPO, afterTree);
+    assert.deepEqual(after.orphans, [], 'nothing should be orphaned by a pure line shift');
+    assert.deepEqual(after.files[0].groups[0].changePoints[0].anchoredComments, [
+      { anchorStart: 2, anchorEnd: 3, text: 'is nm always set here?' },
+    ]);
+  });
+
+  test('orphans, with its anchors intact, when the change point content really does change', async () => {
+    const tree = fourLineTree();
+    const key = await keyOf(tree);
+    await setAnchoredComment(REPO, key, { start: 2, end: 2 }, 'is nm always set here?', ctx());
+
+    const afterTree = [
+      fileNode({
+        groups: [
+          groupNode({
+            changePoints: [cp({ diffText: `${FOUR_LINE_DIFF}\n+const extra = 1;` })],
+            total: 1,
+          }),
+        ],
+        total: 1,
+      }),
+    ];
+
+    const after = await annotate(REPO, afterTree);
+    assert.equal(after.orphans.length, 1);
+    const orphan = after.orphans[0];
+    assert.equal(orphan.key, key);
+    assert.equal(orphan.text, null, 'there was no whole-change-point comment');
+    assert.equal(orphan.note, null);
+    assert.deepEqual(orphan.anchored, [
+      { anchorStart: 2, anchorEnd: 2, text: 'is nm always set here?' },
+    ]);
+    assert.equal(orphan.diffText, FOUR_LINE_DIFF, 'the snapshot the anchors index into');
+  });
+
+  test('an anchored comment coexists with an unanchored comment and a note on the same change point', async () => {
+    const tree = fourLineTree();
+    const key = await keyOf(tree);
+    await setComment(REPO, key, 'whole-change-point question', ctx());
+    await setNote(REPO, key, 'a note', ctx());
+    await setAnchoredComment(REPO, key, { start: 1, end: 1 }, 'line question', ctx());
+
+    const changePoint = (await annotate(REPO, tree)).files[0].groups[0].changePoints[0];
+    assert.equal(changePoint.comment, 'whole-change-point question');
+    assert.equal(changePoint.note, 'a note');
+    assert.deepEqual(changePoint.anchoredComments, [
+      { anchorStart: 1, anchorEnd: 1, text: 'line question' },
+    ]);
+  });
+
+  test('each anchored comment counts toward stats.comments', async () => {
+    const tree = fourLineTree();
+    const key = await keyOf(tree);
+    await setComment(REPO, key, 'whole-change-point question', ctx());
+    await setAnchoredComment(REPO, key, { start: 1, end: 1 }, 'one', ctx());
+    await setAnchoredComment(REPO, key, { start: 2, end: 2 }, 'two', ctx());
+
+    const result = await annotate(REPO, tree);
+    assert.deepEqual(result.stats, { total: 1, checked: 0, comments: 3 });
+  });
+
+  test('discarding a history entry takes its anchored comments with it', async () => {
+    const tree = fourLineTree();
+    const key = await keyOf(tree);
+    await setAnchoredComment(REPO, key, { start: 0, end: 0 }, 'gone soon', ctx());
+
+    const afterTree = [
+      fileNode({
+        groups: [groupNode({ changePoints: [cp({ diffText: '+totally different' })], total: 1 })],
+        total: 1,
+      }),
+    ];
+    assert.equal((await annotate(REPO, afterTree)).orphans.length, 1);
+
+    await discardOrphan(REPO, key);
+    assert.deepEqual((await annotate(REPO, afterTree)).orphans, []);
+  });
+
+  test('an existing state file written before this feature loads and annotates unchanged', async () => {
+    // Byte-for-byte the shape the human's live state files already have --
+    // no anchoredComments key at all.
+    await mkdir(stateDir(), { recursive: true });
+    const legacyKey = changePointKey(cp({ diffText: FOUR_LINE_DIFF }), 0);
+    await writeFile(
+      statePath(REPO),
+      JSON.stringify({
+        version: 1,
+        checked: { [legacyKey]: true },
+        comments: {
+          [legacyKey]: {
+            text: 'pre-existing comment',
+            updatedAt: '2026-07-01T00:00:00.000Z',
+            filePath: 'src/auth.js',
+            functionName: 'handleLogin',
+            diffText: FOUR_LINE_DIFF,
+          },
+        },
+        notes: {},
+      }),
+    );
+
+    const result = await annotate(REPO, fourLineTree());
+    const changePoint = result.files[0].groups[0].changePoints[0];
+    assert.equal(changePoint.checked, true);
+    assert.equal(changePoint.comment, 'pre-existing comment');
+    assert.deepEqual(changePoint.anchoredComments, []);
+    assert.deepEqual(result.stats, { total: 1, checked: 1, comments: 1 });
   });
 });

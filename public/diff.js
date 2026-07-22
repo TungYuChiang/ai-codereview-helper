@@ -161,6 +161,61 @@ function buildSegments(entry) {
   return merged;
 }
 
+// ===========================================================================
+// EXTENSION POINT 6 -- line anchoring (comment on one line, or a run of
+// lines, inside a change point -- the GitHub/GitLab PR-review idiom).
+//
+// -- Why a registry instead of an import --------------------------------
+// The anchor affordance lives in the diff rows (this file), but the editor
+// and the rendered anchored comments are comments.js's job -- and comments.js
+// already imports buildUnifiedDiff/getPrismLanguage from here for its history
+// snapshots. Importing back would be exactly the cycle this codebase's module
+// briefs treat as a sign of a wrong seam, so comments.js REGISTERS its two
+// entry points here at module load instead. Nothing in this file knows what a
+// comment is; it only knows "there is a place to click, and something else
+// decides what that means".
+//
+// -- What an anchor addresses -------------------------------------------
+// A 0-based inclusive index range into the change point's own diffText lines
+// (see state.js on the server). diffText holds the CHANGED lines only, while
+// `changePoint.lines` also carries context, so the mapping between them is
+// "the k-th non-context line of `lines` is diffText line k" -- computed once
+// per render into anchorIndexByLine below, keyed by the line OBJECT (those
+// objects are shared by reference through the whole pipeline, and are the
+// only thing that reliably distinguishes a change point's own context line
+// from an identical-looking gap-expansion context line spliced in beside it).
+//
+// -- Unified only, deliberately ------------------------------------------
+// See renderAnchorFallback below for the side-by-side story and why.
+// ===========================================================================
+
+let anchorUi = null;
+
+export function registerAnchorUi(handlers) {
+  anchorUi = handlers;
+}
+
+function anchorIndexByLine(changePoint) {
+  const map = new Map();
+  let changedIndex = 0;
+  for (const line of changePoint.lines ?? []) {
+    if (line.type === ' ') continue;
+    map.set(line, changedIndex);
+    changedIndex += 1;
+  }
+  return map;
+}
+
+// The line-number label an anchor button announces. Real file line numbers
+// where the line has one; a deleted line has only an old-side number, and
+// claiming a new-side one would be inventing it (same rule as everywhere else
+// in this app).
+function anchorLineDescription(line) {
+  if (line.newLine != null) return `line ${line.newLine}`;
+  if (line.oldLine != null) return `deleted line ${line.oldLine}`;
+  return 'this line';
+}
+
 export function renderChangePointContent(entry) {
   const { changePoint, contentEl } = entry;
   contentEl.textContent = '';
@@ -168,13 +223,23 @@ export function renderChangePointContent(entry) {
   const lang = getPrismLanguage(changePoint.filePath);
   const segments = buildSegments(entry);
 
+  // Rebuilt from scratch on every render (this function is also the
+  // re-render path for gap expansion and view-mode switching), so a stale
+  // row element can never be handed to the anchored-comment renderer.
+  entry.anchorRows = new Map();
+
+  const anchorCtx =
+    appState.viewMode === 'side-by-side' || !anchorUi
+      ? null
+      : { indexByLine: anchorIndexByLine(changePoint), entry };
+
   const body = createEl('div', { className: 'diff-body' });
   for (const segment of segments) {
     if (segment.type === 'lines') {
       body.appendChild(
         appState.viewMode === 'side-by-side'
           ? buildSideBySideDiff(segment.lines, lang)
-          : buildUnifiedDiff(segment.lines, lang),
+          : buildUnifiedDiff(segment.lines, lang, anchorCtx),
       );
     } else {
       body.appendChild(segment.el);
@@ -182,6 +247,11 @@ export function renderChangePointContent(entry) {
   }
 
   contentEl.appendChild(body);
+
+  // Anchored comments render last, into rows that now exist. In side-by-side
+  // there are no anchor rows at all, so this falls back to a flat list under
+  // the diff -- see comments.js's renderAnchoredComments.
+  if (anchorUi) anchorUi.renderAnchored(entry);
 }
 
 // ---------------------------------------------------------------------------
@@ -200,16 +270,27 @@ export function renderChangePointContent(entry) {
 // oldLine, newLine, text} -- and buildUnifiedRow already renders a null
 // oldLine/newLine as an empty gutter cell, which is exactly what a snapshot
 // (deliberately stored without line numbers, see state.js) must show.
-export function buildUnifiedDiff(lines, lang) {
+// `anchorCtx` (optional, unified rendering of a live change point only) is
+// { indexByLine, entry } -- see EXTENSION POINT 6. When absent the output is
+// byte-for-byte what it always was, which is what keeps comments.js's history
+// snapshots (no live change point behind them, nothing to anchor to) and
+// gap-expansion context rows unchanged.
+export function buildUnifiedDiff(lines, lang, anchorCtx = null) {
   const container = createEl('div', { className: 'diff-unified' });
+  if (anchorCtx) container.classList.add('diff-anchorable');
   for (const line of lines) {
-    container.appendChild(buildUnifiedRow(line, lang));
+    container.appendChild(buildUnifiedRow(line, lang, anchorCtx));
   }
   return container;
 }
 
-function buildUnifiedRow(line, lang) {
+function buildUnifiedRow(line, lang, anchorCtx = null) {
   const row = createEl('div', { className: `diff-row diff-row-${diffRowTypeClass(line.type)}` });
+  // The anchor cell is added to EVERY row whenever anchoring is on, even the
+  // rows that cannot be anchored (gap context spliced in around the change
+  // point) -- an empty placeholder keeps every row's columns aligned, which a
+  // cell that appears only on some rows would not.
+  if (anchorCtx) row.appendChild(buildAnchorCell(line, anchorCtx));
   row.appendChild(
     createEl('span', {
       className: 'diff-gutter',
@@ -227,6 +308,117 @@ function buildUnifiedRow(line, lang) {
   code.appendChild(buildCodeSpan(line.text, lang));
   row.appendChild(code);
   return row;
+}
+
+// One row's anchor affordance: a real <button> (Tab/Enter/Space work for
+// free, and a shift-click arrives here with e.shiftKey already set, so
+// shift-Enter from the keyboard extends a range for free too), or an inert
+// placeholder for a row that is not part of this change point's own diff.
+//
+// Only ONE of these buttons per change point is in the tab order at a time
+// (roving tabindex): a 67-line change point would otherwise put 67 tab stops
+// between the diff and the comment box below it. Arrow Up/Down move between
+// them once focus is inside -- the standard composite-widget pattern, and the
+// same level of keyboard/ARIA care the splitter above already commits to.
+function buildAnchorCell(line, anchorCtx) {
+  const index = anchorCtx.indexByLine.get(line);
+  if (index === undefined) return createEl('span', { className: 'diff-anchor-cell' });
+
+  const cell = createEl('span', { className: 'diff-anchor-cell' });
+  const btn = createEl('button', { className: 'diff-anchor-btn', text: '+' });
+  btn.type = 'button';
+  btn.tabIndex = index === 0 ? 0 : -1;
+  btn.dataset.anchorIndex = String(index);
+  btn.setAttribute(
+    'aria-label',
+    `comment on ${anchorLineDescription(line)} (shift to extend from the last line you picked)`,
+  );
+  // Activation. A keyboard Enter/Space arrives here as a click too, so mouse
+  // and keyboard share one path: `shiftKey` covers shift-click and
+  // shift-Enter, and a pending Shift+Arrow selection covers plain Enter after
+  // extending. See resolveAnchorRange.
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    const entry = anchorCtx.entry;
+    const range = resolveAnchorRange(entry, index, e.shiftKey);
+    entry.anchorPendingStart = null;
+    if (!e.shiftKey) entry.anchorLastPick = index;
+    anchorUi.openEditor(entry, range);
+  });
+  btn.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    // Stopped from reaching keyboard.js's global handler: nothing typed while
+    // aiming at a line should navigate away from it.
+    e.stopPropagation();
+    const entry = anchorCtx.entry;
+    // Shift+Arrow extends a pending range from wherever the walk started;
+    // a plain arrow abandons any pending range and just moves.
+    if (e.shiftKey) {
+      if (entry.anchorPendingStart == null) entry.anchorPendingStart = index;
+    } else {
+      entry.anchorPendingStart = null;
+    }
+    moveAnchorFocus(entry, index, e.key === 'ArrowDown' ? 1 : -1);
+  });
+  cell.appendChild(btn);
+  // `cell` only, not its row: the row does not exist as this cell's parent
+  // yet (buildUnifiedRow appends it a moment later). Consumers read
+  // cell.parentElement at insertion time, by which point it does.
+  anchorCtx.entry.anchorRows.set(index, { cell, btn });
+  return cell;
+}
+
+// The range an activation means:
+//   plain            -> just this line
+//   shift            -> from the last line picked (mouse) back to this one
+//   pending Shift+Arrow -> from where the arrow walk started to this one
+// Shift with nothing to extend from degrades to a single line rather than
+// doing something surprising.
+function resolveAnchorRange(entry, index, shiftKey) {
+  const origin = shiftKey
+    ? entry.anchorLastPick ?? entry.anchorPendingStart ?? index
+    : entry.anchorPendingStart ?? index;
+  return { start: Math.min(origin, index), end: Math.max(origin, index) };
+}
+
+// Roving tabindex: the focused button becomes the single tab stop, so leaving
+// and re-entering the diff comes back to where the user was. Also repaints the
+// pending Shift+Arrow range, which is the only feedback a keyboard user gets
+// that they are building a range rather than picking one line.
+function moveAnchorFocus(entry, fromIndex, delta) {
+  const next = entry.anchorRows.get(fromIndex + delta);
+  if (!next) return;
+  for (const { btn } of entry.anchorRows.values()) btn.tabIndex = -1;
+  next.btn.tabIndex = 0;
+  next.btn.focus();
+  paintPendingAnchorRange(entry, fromIndex + delta);
+}
+
+function paintPendingAnchorRange(entry, focusedIndex) {
+  const start = entry.anchorPendingStart;
+  for (const [index, { cell }] of entry.anchorRows) {
+    const row = cell.parentElement;
+    if (!row) continue;
+    const inRange =
+      start != null &&
+      index >= Math.min(start, focusedIndex) &&
+      index <= Math.max(start, focusedIndex);
+    row.classList.toggle('diff-row-anchor-pending', inRange);
+  }
+}
+
+// Puts keyboard focus on a change point's first anchor button -- the entry
+// point for the `a` shortcut (keyboard.js), which is what makes this feature
+// reachable without a mouse at all.
+export function focusFirstAnchor(entry) {
+  const first = entry.anchorRows && entry.anchorRows.get(0);
+  if (!first) return false;
+  entry.anchorPendingStart = null;
+  for (const { btn } of entry.anchorRows.values()) btn.tabIndex = -1;
+  first.btn.tabIndex = 0;
+  first.btn.focus();
+  return true;
 }
 
 // ---------------------------------------------------------------------------

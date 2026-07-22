@@ -615,7 +615,25 @@ async function routeApi(req, res, url, pathname) {
     }
     const repo = await getRepoOr404(body.repo);
     try {
-      await state.setComment(repo.id, key, body.text, body.context);
+      // An anchored comment is the SAME annotation kind with an optional
+      // `anchor` field (an index range into the change point's own diffText
+      // -- see state.js's setAnchoredComment), so it rides this route rather
+      // than getting a sibling of its own the way /api/note did: /api/note
+      // exists because a note is a genuinely different thing (never exported
+      // to Claude, its own storage map, its own UI slot), whereas an anchor
+      // only narrows *which lines* an ordinary comment is about. Omitting
+      // `anchor` takes the original code path, unchanged, byte for byte.
+      //
+      // No requireRef here, and none is needed: neither `key`, `text`,
+      // `anchor` nor `context` is a ref or ever reaches a git command line --
+      // they are only written into the state JSON. Like every other /api/
+      // route this one sits after assertNotCrossOrigin() at the top of
+      // routeApi and does not get, or bypass, a guard of its own.
+      if (body.anchor === undefined || body.anchor === null) {
+        await state.setComment(repo.id, key, body.text, body.context);
+      } else {
+        await state.setAnchoredComment(repo.id, key, body.anchor, body.text, body.context);
+      }
     } catch (err) {
       throw new HttpError(400, err.message);
     }

@@ -676,3 +676,222 @@ describe('toMarkdown', () => {
     assert.deepEqual(ctx, before);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Anchored comments — a comment pointing at ONE line (or a run of lines)
+// inside a change point. The whole point of the feature is that the exported
+// prompt POINTS at something instead of gesturing at it, so these tests are
+// about what the reader can actually tell from the text.
+// ---------------------------------------------------------------------------
+
+// A change point big enough that "here" is genuinely ambiguous without an
+// anchor. diffText holds the changed lines only (model.js), while `lines`
+// also carries context -- exactly the real shape.
+function bigChangePoint(overrides = {}) {
+  return annotatedChangePoint({
+    newStart: 20,
+    newEnd: 26,
+    lines: [
+      { type: ' ', text: 'function processMVPF(mvpf) {', oldLine: 19, newLine: 20 },
+      { type: '-', text: '  if(!mvpf) return;', oldLine: 20, newLine: null },
+      { type: '+', text: '  if(!mvpf) return [];', oldLine: null, newLine: 21 },
+      { type: ' ', text: '  const node = lookup(mvpf);', oldLine: 21, newLine: 22 },
+      { type: '+', text: '  const nm = node.getAttribute("name");', oldLine: null, newLine: 23 },
+      { type: '+', text: '  if (!nm) return null;', oldLine: null, newLine: 24 },
+      { type: ' ', text: '  return build(nm);', oldLine: 22, newLine: 25 },
+    ],
+    diffText: [
+      '-  if(!mvpf) return;',
+      '+  if(!mvpf) return [];',
+      '+  const nm = node.getAttribute("name");',
+      '+  if (!nm) return null;',
+    ].join('\n'),
+    ...overrides,
+  });
+}
+
+function anchoredCtx(anchoredComments, cpOverrides = {}) {
+  return baseCtx({
+    files: [
+      annotatedFile({
+        groups: [
+          annotatedGroup({
+            name: 'processMVPF',
+            changePoints: [bigChangePoint({ anchoredComments, ...cpOverrides })],
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+describe('toClaudePrompt — anchored comments', () => {
+  test('quotes the exact anchored line, on its own, so nothing has to be searched for', () => {
+    const prompt = toClaudePrompt(
+      anchoredCtx([{ anchorStart: 3, anchorEnd: 3, text: 'is nm always set here?' }]),
+    );
+
+    assert.ok(prompt.includes('is nm always set here?'), 'the comment itself must appear');
+    // The anchored line, isolated in its own fenced block.
+    assert.ok(
+      /```diff\n\+  if \(!nm\) return null;\n```/.test(prompt),
+      `expected the anchored line alone in its own fence:\n${prompt}`,
+    );
+  });
+
+  test('names the file line the anchor points at, so the reader can open it directly', () => {
+    const prompt = toClaudePrompt(
+      anchoredCtx([{ anchorStart: 3, anchorEnd: 3, text: 'is nm always set here?' }]),
+    );
+    // `+  if (!nm) return null;` is newLine 24 in the fixture.
+    assert.ok(prompt.includes('第 24 行'), `expected the file line number:\n${prompt}`);
+  });
+
+  test('a multi-line anchor quotes every line it covers, and names the whole range', () => {
+    const prompt = toClaudePrompt(
+      anchoredCtx([{ anchorStart: 2, anchorEnd: 3, text: 'both of these' }]),
+    );
+
+    assert.ok(
+      /```diff\n\+  const nm = node\.getAttribute\("name"\);\n\+  if \(!nm\) return null;\n```/.test(prompt),
+      `expected both anchored lines alone in one fence:\n${prompt}`,
+    );
+    assert.ok(prompt.includes('第 23-24 行'), `expected the file line range:\n${prompt}`);
+  });
+
+  test('marks the anchored lines inside the full diff, so the surrounding context is still readable', () => {
+    const prompt = toClaudePrompt(
+      anchoredCtx([{ anchorStart: 3, anchorEnd: 3, text: 'is nm always set here?' }]),
+    );
+
+    // Every diff line is still present...
+    assert.ok(prompt.includes('function processMVPF(mvpf) {'), 'context line must survive');
+    // ...but only the anchored one carries the pointer marker.
+    assert.ok(prompt.includes('» +  if (!nm) return null;'), `expected the anchored line marked:\n${prompt}`);
+    assert.ok(
+      prompt.includes('  +  const nm = node.getAttribute("name");'),
+      'a non-anchored line must be padded to the marker width, not marked',
+    );
+    assert.equal(
+      (prompt.match(/^» /gm) ?? []).length,
+      1,
+      'exactly one diff line may carry the marker',
+    );
+  });
+
+  test('an anchor on a deleted line is labelled as the OLD file line, never a new one', () => {
+    const prompt = toClaudePrompt(
+      anchoredCtx([{ anchorStart: 0, anchorEnd: 0, text: 'why drop the early return?' }]),
+    );
+    // '-  if(!mvpf) return;' is oldLine 20 and has no new-side line at all.
+    assert.ok(prompt.includes('舊版第 20 行'), `expected an old-side label:\n${prompt}`);
+  });
+
+  test('several anchored comments on one change point each get their own entry', () => {
+    const prompt = toClaudePrompt(
+      anchoredCtx([
+        { anchorStart: 1, anchorEnd: 1, text: 'first question' },
+        { anchorStart: 3, anchorEnd: 3, text: 'second question' },
+      ]),
+    );
+
+    assert.ok(prompt.includes('first question'));
+    assert.ok(prompt.includes('second question'));
+    assert.ok(prompt.includes('## 1.'), 'expected a numbered entry');
+    assert.ok(prompt.includes('## 2.'), 'expected a SECOND numbered entry');
+    assert.ok(!prompt.includes('## 3.'), 'and no more than two');
+  });
+
+  test('an unanchored comment on the same change point still gets its own, unmarked entry', () => {
+    const prompt = toClaudePrompt(
+      anchoredCtx([{ anchorStart: 3, anchorEnd: 3, text: 'anchored question' }], {
+        comment: 'whole-block question',
+      }),
+    );
+
+    assert.ok(prompt.includes('whole-block question'));
+    assert.ok(prompt.includes('anchored question'));
+    assert.ok(prompt.includes('## 2.'), 'two entries, one per comment');
+    // The unanchored entry must be rendered exactly as it always was: no
+    // pointer marker, no anchored-lines block.
+    const unanchoredEntry = prompt.split('\n---\n').find((s) => s.includes('whole-block question'));
+    assert.ok(!unanchoredEntry.includes('»'), 'the unanchored entry must carry no anchor marker');
+  });
+
+  test('a change point whose ONLY annotation is anchored still reaches the prompt', () => {
+    const prompt = toClaudePrompt(
+      anchoredCtx([{ anchorStart: 3, anchorEnd: 3, text: 'only annotation here' }], {
+        comment: null,
+        note: null,
+      }),
+    );
+    assert.ok(prompt.includes('only annotation here'));
+    assert.ok(!prompt.includes('沒有留下任何 comment'), 'must not claim the review was empty');
+  });
+
+  test('notes are still excluded — an anchored comment does not smuggle them in', () => {
+    const prompt = toClaudePrompt(
+      anchoredCtx([{ anchorStart: 3, anchorEnd: 3, text: 'anchored question' }], {
+        comment: null,
+        note: 'a private note',
+      }),
+    );
+    assert.ok(!prompt.includes('a private note'), 'notes must never reach the Claude prompt');
+  });
+
+  test('a change point with no anchoredComments field at all is unaffected', () => {
+    // Every pre-existing state file, and every fixture written before this
+    // feature: the field is simply absent.
+    const cp = annotatedChangePoint({ comment: 'plain old comment' });
+    delete cp.anchoredComments;
+    const prompt = toClaudePrompt(
+      baseCtx({ files: [annotatedFile({ groups: [annotatedGroup({ changePoints: [cp] })] })] }),
+    );
+    assert.ok(prompt.includes('plain old comment'));
+    assert.ok(!prompt.includes('»'));
+  });
+});
+
+describe('toMarkdown — anchored comments', () => {
+  test('carries the anchored lines and the comment', () => {
+    const md = toMarkdown(
+      anchoredCtx([{ anchorStart: 3, anchorEnd: 3, text: 'is nm always set here?' }]),
+    );
+    assert.ok(md.includes('is nm always set here?'), 'the comment must appear');
+    assert.ok(md.includes('第 24 行'), `the anchored file line must appear:\n${md}`);
+    assert.ok(md.includes('> +  if (!nm) return null;'), 'the anchored line must be quoted');
+  });
+
+  test('a change point whose ONLY annotation is anchored still earns a heading', () => {
+    const md = toMarkdown(
+      anchoredCtx([{ anchorStart: 3, anchorEnd: 3, text: 'only annotation' }], {
+        comment: null,
+        note: null,
+      }),
+    );
+    assert.ok(md.includes('### processMVPF'), `expected a heading:\n${md}`);
+    assert.ok(md.includes('only annotation'));
+    assert.ok(!md.includes('這次 review 沒有留下 comment'), 'must not claim the review was empty');
+  });
+
+  test('a history entry carries its anchored comments too', () => {
+    const md = toMarkdown(
+      baseCtx({
+        orphans: [
+          {
+            key: 'deadbeef',
+            text: null,
+            note: null,
+            anchored: [{ anchorStart: 1, anchorEnd: 1, text: 'anchored on gone code' }],
+            updatedAt: '2026-07-20T00:00:00.000Z',
+            filePath: 'web/sims/js/selector.js',
+            functionName: 'processMVPF',
+            diffText: '-if(!mvpf) return;\n+if(!mvpf) return [];',
+          },
+        ],
+      }),
+    );
+    assert.ok(md.includes('anchored on gone code'), `the anchored text must survive:\n${md}`);
+    assert.ok(md.includes('+if(!mvpf) return [];'), 'the line it pointed at must be shown');
+  });
+});

@@ -16,7 +16,7 @@
 
 import { appState, dom, createEl, mainPaneEl } from './state.js';
 import { api, clearError, showError } from './api.js';
-import { buildUnifiedDiff, getPrismLanguage } from './diff.js';
+import { buildUnifiedDiff, getPrismLanguage, registerAnchorUi, renderChangePointContent } from './diff.js';
 import { isAnnotationExpanded, setAnnotationExpanded, forgetAnnotationExpanded,
   ORPHAN_CARD_KIND, ORPHAN_SECTION_KIND, ORPHAN_SECTION_KEY } from './prefs.js';
 
@@ -99,6 +99,15 @@ function closeOpenEditor(nextKey, nextKind) {
   if (!other) return;
   if (appState.editingKind === 'comment') renderCommentView(other);
   else if (appState.editingKind === 'note') renderNoteView(other);
+  else if (appState.editingKind === 'anchored') {
+    // The anchored editor is spliced into the diff body, so discarding it
+    // means re-rendering that body -- which is also what puts the saved
+    // anchored comments back in its place. Cheap (one change point) and it
+    // cannot disturb scroll: renderChangePointContent replaces contentEl's
+    // children in place, exactly as gap expansion already does.
+    appState.editingAnchor = null;
+    if (other.contentEl) renderChangePointContent(other);
+  }
 }
 
 // ===========================================================================
@@ -246,6 +255,63 @@ function buildAnnotationBody({ kind, key, bodyClassName, labelClassName, labelTe
 }
 
 // ===========================================================================
+// The editor itself -- ONE implementation, used by all three things that can
+// be written on a change point: its comment, its note, and an anchored
+// comment on one of its lines. Extracted verbatim from what enterCommentEdit
+// and enterNoteEdit were each doing identically (same textarea, same
+// Esc/⌘Enter/clear-to-delete contract, same "stop every keystroke from
+// reaching keyboard.js" rule, same focus-and-put-the-caret-at-the-end), so
+// anchoring reuses the existing editor rather than growing a third copy of it
+// that could drift.
+// ===========================================================================
+
+function buildAnnotationEditor({ value, ariaLabel, onSave, onCancel }) {
+  const textarea = document.createElement('textarea');
+  textarea.className = 'comment-textarea';
+  textarea.value = value || '';
+  textarea.rows = 4;
+  textarea.setAttribute('aria-label', ariaLabel);
+
+  const hint = createEl('div', {
+    className: 'comment-hint',
+    text: 'Esc cancel  ·  ⌘/Ctrl+Enter save  ·  clear + save = delete',
+  });
+
+  const actions = createEl('div', { className: 'comment-actions' });
+  const saveBtn = createEl('button', { className: 'comment-btn comment-btn-primary', text: 'Save' });
+  saveBtn.type = 'button';
+  saveBtn.addEventListener('click', () => onSave(textarea.value));
+  const cancelBtn = createEl('button', { className: 'comment-btn', text: 'Cancel' });
+  cancelBtn.type = 'button';
+  cancelBtn.addEventListener('click', () => onCancel());
+  actions.append(saveBtn, cancelBtn);
+
+  // Stop every keyboard event from leaving the textarea: this is the other
+  // half of EXTENSION POINT 5 -- nothing typed here should ever be treated as
+  // anything but text by the global shortcut handler.
+  const stop = (e) => e.stopPropagation();
+  textarea.addEventListener('keyup', stop);
+  textarea.addEventListener('keypress', stop);
+  textarea.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      onCancel();
+    } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      onSave(textarea.value);
+    }
+    stop(e);
+  });
+
+  return { textarea, hint, actions };
+}
+
+function focusEditor(textarea) {
+  textarea.focus();
+  textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+}
+
+// ===========================================================================
 // Comment -- unchanged behavior from before notes existed, just scoped to
 // entry.commentBodyEl (a child of the shared wrapper) instead of owning the
 // whole section.
@@ -308,47 +374,15 @@ export function enterCommentEdit(entry) {
   commentBodyEl.textContent = '';
   commentBodyEl.classList.add('annotation-slot-expanded');
 
-  const textarea = document.createElement('textarea');
-  textarea.className = 'comment-textarea';
-  textarea.value = changePoint.comment || '';
-  textarea.rows = 4;
-  textarea.setAttribute('aria-label', 'comment text');
-
-  const hint = createEl('div', {
-    className: 'comment-hint',
-    text: 'Esc cancel  ·  ⌘/Ctrl+Enter save  ·  clear + save = delete',
-  });
-
-  const actions = createEl('div', { className: 'comment-actions' });
-  const saveBtn = createEl('button', { className: 'comment-btn comment-btn-primary', text: 'Save' });
-  saveBtn.type = 'button';
-  saveBtn.addEventListener('click', () => saveComment(entry, textarea.value));
-  const cancelBtn = createEl('button', { className: 'comment-btn', text: 'Cancel' });
-  cancelBtn.type = 'button';
-  cancelBtn.addEventListener('click', () => exitCommentEdit(entry));
-  actions.append(saveBtn, cancelBtn);
-
-  // Stop every keyboard event from leaving the textarea: this is the other
-  // half of EXTENSION POINT 5 -- even before the keyboard-navigation unit's
-  // shortcut handler exists, nothing typed here should ever be treated as
-  // anything but text.
-  const stop = (e) => e.stopPropagation();
-  textarea.addEventListener('keyup', stop);
-  textarea.addEventListener('keypress', stop);
-  textarea.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      exitCommentEdit(entry);
-    } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-      e.preventDefault();
-      saveComment(entry, textarea.value);
-    }
-    stop(e);
+  const { textarea, hint, actions } = buildAnnotationEditor({
+    value: changePoint.comment,
+    ariaLabel: 'comment text',
+    onSave: (value) => saveComment(entry, value),
+    onCancel: () => exitCommentEdit(entry),
   });
 
   commentBodyEl.append(textarea, hint, actions);
-  textarea.focus();
-  textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  focusEditor(textarea);
 }
 
 function exitCommentEdit(entry) {
@@ -479,43 +513,15 @@ export function enterNoteEdit(entry) {
   noteBodyEl.textContent = '';
   noteBodyEl.classList.add('annotation-slot-expanded');
 
-  const textarea = document.createElement('textarea');
-  textarea.className = 'comment-textarea';
-  textarea.value = changePoint.note || '';
-  textarea.rows = 4;
-  textarea.setAttribute('aria-label', 'note text');
-
-  const hint = createEl('div', {
-    className: 'comment-hint',
-    text: 'Esc cancel  ·  ⌘/Ctrl+Enter save  ·  clear + save = delete',
-  });
-
-  const actions = createEl('div', { className: 'comment-actions' });
-  const saveBtn = createEl('button', { className: 'comment-btn comment-btn-primary', text: 'Save' });
-  saveBtn.type = 'button';
-  saveBtn.addEventListener('click', () => saveNote(entry, textarea.value));
-  const cancelBtn = createEl('button', { className: 'comment-btn', text: 'Cancel' });
-  cancelBtn.type = 'button';
-  cancelBtn.addEventListener('click', () => exitNoteEdit(entry));
-  actions.append(saveBtn, cancelBtn);
-
-  const stop = (e) => e.stopPropagation();
-  textarea.addEventListener('keyup', stop);
-  textarea.addEventListener('keypress', stop);
-  textarea.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      exitNoteEdit(entry);
-    } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-      e.preventDefault();
-      saveNote(entry, textarea.value);
-    }
-    stop(e);
+  const { textarea, hint, actions } = buildAnnotationEditor({
+    value: changePoint.note,
+    ariaLabel: 'note text',
+    onSave: (value) => saveNote(entry, value),
+    onCancel: () => exitNoteEdit(entry),
   });
 
   noteBodyEl.append(textarea, hint, actions);
-  textarea.focus();
-  textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  focusEditor(textarea);
 }
 
 function exitNoteEdit(entry) {
@@ -562,6 +568,273 @@ async function saveNote(entry, text) {
   }
   renderNoteView(entry, { focusTrigger: true });
 }
+
+
+// ===========================================================================
+// Anchored comments -- a comment attached to ONE LINE, or a contiguous run of
+// lines, inside a change point. Same annotation kind as the comment above
+// (same editor, same export, same orphaning, counted in the same stats), with
+// one extra field: the line range it points at.
+//
+// -- Why this exists ------------------------------------------------------
+// A change point can be 67 lines. A comment on the whole thing that says
+// "is `nm` always set here?" forces the reader -- and, in the exported
+// prompt, Claude -- to guess which line "here" is. Anchoring is what turns
+// that into a pointer. The export is the payoff (see export.js); this UI is
+// how the pointer gets made.
+//
+// -- The anchor is an index range into diffText, not a file line number ----
+// Explained at length in state.js on the server. Short version: diffText is
+// inside changePointKey, so an index into it is exactly as stable as the
+// checkmark next to it -- if the key survives an amend the text is
+// byte-identical and index i still names line i; if the text changed at all,
+// the key changed and the whole record orphans through the existing path.
+//
+// -- Placement ------------------------------------------------------------
+// Directly under the anchored line (GitHub's idiom), spliced into the diff
+// body between two rows. That means it is rebuilt by
+// renderChangePointContent, which is also the re-render path for gap
+// expansion and view-mode switching -- hence the registerAnchorUi() hook at
+// the bottom of this section rather than a call from renderAllComments: the
+// diff owns when its own body is rebuilt, and anchored comments have to
+// follow it.
+//
+// -- Side-by-side ---------------------------------------------------------
+// Anchoring is offered in UNIFIED MODE ONLY, and this is a deliberate,
+// visible limitation rather than something quietly half-working:
+//
+//   An anchor is a contiguous range of diffText indices. Side-by-side pairs a
+//   run of '-' lines against the '+' run that replaced it
+//   (pairLinesForSideBySide), so one visual row can carry TWO different
+//   diffText indices, one per column, and a filler row carries none. A
+//   contiguous anchor range is therefore not contiguous in either column, and
+//   "the row under the anchored line" is not a single well-defined place --
+//   it is one place per column, or none. Offering the affordance there would
+//   mean either duplicating each comment into both columns or picking one
+//   arbitrarily, and both read as a bug the first time a range spans a
+//   deletion and its replacement.
+//
+// So in side-by-side the gutter affordance is absent (diff.js passes no
+// anchorCtx) and existing anchored comments render as a flat list under the
+// diff, each stating the lines it points at and saying, out loud, that
+// unified view shows it in place. Nothing becomes invisible or unreachable --
+// the one thing that would genuinely be broken.
+// ===========================================================================
+
+// The line label an anchored comment announces: real file line numbers where
+// the lines have them, old-side numbers for deletions (claiming a new-side
+// number for a deleted line would be inventing one), and a plain
+// "lines N-M of this change" when `lines` cannot answer at all.
+function anchorRangeLabel(changePoint, anchorStart, anchorEnd) {
+  const covered = [];
+  let changedIndex = 0;
+  for (const line of changePoint.lines ?? []) {
+    if (line.type === ' ') continue;
+    if (changedIndex >= anchorStart && changedIndex <= anchorEnd) covered.push(line);
+    changedIndex += 1;
+  }
+
+  const newNumbers = covered.map((l) => l.newLine).filter((n) => n != null);
+  if (newNumbers.length > 0) return `line${newNumbers.length > 1 ? 's' : ''} ${formatSpan(newNumbers)}`;
+  const oldNumbers = covered.map((l) => l.oldLine).filter((n) => n != null);
+  if (oldNumbers.length > 0) return `deleted line${oldNumbers.length > 1 ? 's' : ''} ${formatSpan(oldNumbers)}`;
+  return anchorStart === anchorEnd ? `line ${anchorStart + 1} of this change` : `lines ${anchorStart + 1}-${anchorEnd + 1} of this change`;
+}
+
+function formatSpan(numbers) {
+  const min = Math.min(...numbers);
+  const max = Math.max(...numbers);
+  return min === max ? String(min) : `${min}-${max}`;
+}
+
+// Entry point registered with diff.js -- called when an anchor button is
+// activated, with the range already resolved there (diff.js owns the
+// click/shift/arrow gesture model; this owns what a range MEANS).
+function openAnchoredEditor(entry, range) {
+  const key = entry.changePoint.id;
+
+  closeOpenEditor(key, 'anchored');
+
+  appState.isEditing = true;
+  appState.editingKey = key;
+  appState.editingKind = 'anchored';
+  appState.editingAnchor = range;
+
+  // Re-render the body so the editor lands in the right slot; the render pass
+  // itself (renderAnchoredComments below) is what draws it, from
+  // appState.editingAnchor.
+  renderChangePointContent(entry);
+}
+
+function exitAnchoredEditor(entry) {
+  appState.isEditing = false;
+  appState.editingKey = null;
+  appState.editingKind = null;
+  appState.editingAnchor = null;
+  renderChangePointContent(entry);
+}
+
+async function saveAnchoredComment(entry, range, text) {
+  clearError();
+  const { changePoint } = entry;
+  const context = {
+    filePath: changePoint.filePath,
+    functionName: changePoint.functionName,
+    diffText: changePoint.diffText,
+  };
+
+  try {
+    await api.setAnchoredComment(appState.repo, changePoint.id, range, text, context);
+  } catch (err) {
+    showError(err.message);
+    return; // stay in edit mode -- the user's text is still in the textarea
+  }
+
+  // Same in-place update rule as saveComment/saveNote: never refetch the
+  // tree, just mutate the change point this editor belongs to.
+  const list = (changePoint.anchoredComments ?? []).filter(
+    (a) => !(a.anchorStart === range.start && a.anchorEnd === range.end),
+  );
+  const isEmpty = typeof text !== 'string' || text.trim() === '';
+  const had = (changePoint.anchoredComments ?? []).length;
+  if (!isEmpty) list.push({ anchorStart: range.start, anchorEnd: range.end, text });
+  list.sort((a, b) => a.anchorStart - b.anchorStart || a.anchorEnd - b.anchorEnd);
+  changePoint.anchoredComments = list;
+
+  if (appState.tree && appState.tree.stats) {
+    appState.tree.stats.comments += list.length - had;
+  }
+
+  exitAnchoredEditor(entry);
+}
+
+// Called by diff.js at the end of every renderChangePointContent.
+function renderAnchoredComments(entry) {
+  const { changePoint } = entry;
+  const saved = changePoint.anchoredComments ?? [];
+  const editing =
+    appState.editingKind === 'anchored' && appState.editingKey === changePoint.id
+      ? appState.editingAnchor
+      : null;
+  if (saved.length === 0 && !editing) return;
+
+  // Side-by-side has no anchor rows to splice into -- see the block comment
+  // above for why anchoring is unified-only.
+  if (!entry.anchorRows || entry.anchorRows.size === 0) {
+    renderAnchorFallback(entry, saved);
+    return;
+  }
+
+  // Anything already spliced in by a previous pass is gone (the body was
+  // rebuilt), so this only ever inserts.
+  for (const anchored of saved) {
+    if (editing && editing.start === anchored.anchorStart && editing.end === anchored.anchorEnd) {
+      continue; // this one is being edited -- the editor stands in for it
+    }
+    insertAfterAnchorRow(
+      entry,
+      anchored.anchorEnd,
+      buildAnchoredView(entry, anchored),
+    );
+  }
+
+  if (editing) {
+    insertAfterAnchorRow(entry, editing.end, buildAnchoredEditor(entry, editing, saved));
+  }
+}
+
+function insertAfterAnchorRow(entry, index, block) {
+  const target = entry.anchorRows.get(index);
+  // The anchored line is always inside the change point's own diff by
+  // construction (the anchor could only have been made from one of these very
+  // buttons, and an out-of-range anchor is rejected server-side), so this is
+  // defensive only -- append to the body rather than dropping the comment.
+  const row = target && target.cell.parentElement;
+  if (!row || !row.parentElement) {
+    entry.contentEl.appendChild(block);
+    return;
+  }
+  row.parentElement.insertBefore(block, row.nextSibling);
+}
+
+function buildAnchoredBlock(labelText) {
+  const block = createEl('div', { className: 'anchored-comment' });
+  block.appendChild(createEl('span', { className: 'anchored-label', text: labelText }));
+  return block;
+}
+
+function buildAnchoredView(entry, anchored) {
+  const label = anchorRangeLabel(entry.changePoint, anchored.anchorStart, anchored.anchorEnd);
+  const block = buildAnchoredBlock(`Comment on ${label}`);
+  // textContent only -- comment text is whatever the user typed, and may
+  // legitimately contain code pasted out of the reviewed repo.
+  block.appendChild(createEl('p', { className: 'comment-text', text: anchored.text }));
+
+  const actions = createEl('div', { className: 'comment-actions' });
+  const editBtn = createEl('button', { className: 'comment-btn', text: 'Edit' });
+  editBtn.type = 'button';
+  editBtn.addEventListener('click', () =>
+    openAnchoredEditorAt(entry, anchored.anchorStart, anchored.anchorEnd),
+  );
+  const deleteBtn = createEl('button', { className: 'comment-btn comment-btn-danger', text: 'Delete' });
+  deleteBtn.type = 'button';
+  deleteBtn.addEventListener('click', () =>
+    saveAnchoredComment(entry, { start: anchored.anchorStart, end: anchored.anchorEnd }, ''),
+  );
+  actions.append(editBtn, deleteBtn);
+  block.appendChild(actions);
+  return block;
+}
+
+function openAnchoredEditorAt(entry, start, end) {
+  closeOpenEditor(entry.changePoint.id, 'anchored');
+  appState.isEditing = true;
+  appState.editingKey = entry.changePoint.id;
+  appState.editingKind = 'anchored';
+  appState.editingAnchor = { start, end };
+  renderChangePointContent(entry);
+}
+
+function buildAnchoredEditor(entry, range, saved) {
+  const label = anchorRangeLabel(entry.changePoint, range.start, range.end);
+  const block = buildAnchoredBlock(`Comment on ${label}`);
+  const existing = saved.find((a) => a.anchorStart === range.start && a.anchorEnd === range.end);
+
+  const { textarea, hint, actions } = buildAnnotationEditor({
+    value: existing ? existing.text : '',
+    ariaLabel: `comment on ${label}`,
+    onSave: (value) => saveAnchoredComment(entry, range, value),
+    onCancel: () => exitAnchoredEditor(entry),
+  });
+  block.append(textarea, hint, actions);
+  // Deferred one frame: this block is being built during
+  // renderChangePointContent and is not in the document yet, and focusing a
+  // detached element is a no-op.
+  requestAnimationFrame(() => focusEditor(textarea));
+  return block;
+}
+
+// Side-by-side: no rows to anchor into, so the saved anchored comments go in a
+// flat list under the diff, each stating what it points at. Not a silent
+// degradation -- the note says where to see them in place.
+function renderAnchorFallback(entry, saved) {
+  if (saved.length === 0) return;
+  const wrap = createEl('div', { className: 'anchored-fallback' });
+  wrap.appendChild(
+    createEl('p', {
+      className: 'anchored-fallback-note',
+      text:
+        'Anchored comments are shown in place in unified view (press 1). Side-by-side pairs ' +
+        'deleted and added lines into shared rows, so there is no single row to put them under.',
+    }),
+  );
+  for (const anchored of saved) {
+    wrap.appendChild(buildAnchoredView(entry, anchored));
+  }
+  entry.contentEl.appendChild(wrap);
+}
+
+registerAnchorUi({ openEditor: openAnchoredEditor, renderAnchored: renderAnchoredComments });
 
 // ===========================================================================
 // History comments/notes -- change points whose underlying diff no longer
@@ -659,7 +932,7 @@ function ensureOrphansRootEl() {
 // that were open. Neither level writes the other's state.
 //
 // No keyboard shortcut: every single-key binding is spoken for
-// (j/k/x/u/c/f/b/1/2/?, see handleGlobalKeydown in keyboard.js), and this is
+// (j/k/x/u/c/f/b/a/1/2/?, see handleGlobalKeydown in keyboard.js), and this is
 // an appendix -- it does not deserve a hijacked key. Both toggles are real
 // buttons in normal document order, so Tab + Enter reaches them.
 //
@@ -830,7 +1103,9 @@ function buildOrphanCard(orphan) {
   card.dataset.key = orphan.key;
   const detailId = `orphan-detail-${(orphanDetailSeq += 1)}`;
   const { first, extra } = summarizeAnnotation(
-    [orphan.text, orphan.note].filter(Boolean).join('\n'),
+    [orphan.text, orphan.note, ...(orphan.anchored ?? []).map((a) => a.text)]
+      .filter(Boolean)
+      .join('\n'),
   );
 
   const header = createEl('button', { className: 'orphan-header' });
@@ -863,6 +1138,39 @@ function buildOrphanCard(orphan) {
   if (orphan.note) {
     detail.appendChild(createEl('span', { className: 'note-label', text: 'Note' }));
     detail.appendChild(createEl('p', { className: 'orphan-comment orphan-note', text: orphan.note }));
+  }
+  // Anchored comments, each shown WITH the lines it pointed at, sliced out of
+  // the same diffText snapshot rendered above. That slice is the whole value
+  // of keeping an anchored comment in history: "is nm always set here?" is
+  // unreadable once you can no longer tell which line "here" was, and the
+  // code it pointed at is by definition gone from the working tree. No file
+  // line numbers -- a snapshot deliberately has none (see parseSnapshotLines),
+  // and back-calculating one against a file that has since changed would be a
+  // guess presented as a fact.
+  for (const anchored of orphan.anchored ?? []) {
+    detail.appendChild(
+      createEl('span', {
+        className: 'comment-label',
+        text:
+          anchored.anchorStart === anchored.anchorEnd
+            ? `Comment on line ${anchored.anchorStart + 1} of this change`
+            : `Comment on lines ${anchored.anchorStart + 1}-${anchored.anchorEnd + 1} of this change`,
+      }),
+    );
+    const quoted = createEl('div', { className: 'orphan-diff orphan-anchored-diff' });
+    quoted.appendChild(
+      buildUnifiedDiff(
+        parseSnapshotLines(
+          (orphan.diffText ?? '')
+            .split('\n')
+            .slice(anchored.anchorStart, anchored.anchorEnd + 1)
+            .join('\n'),
+        ),
+        getPrismLanguage(orphan.filePath),
+      ),
+    );
+    detail.appendChild(quoted);
+    detail.appendChild(createEl('p', { className: 'orphan-comment', text: anchored.text }));
   }
 
   const actions = createEl('div', { className: 'orphan-actions' });

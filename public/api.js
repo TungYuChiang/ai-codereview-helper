@@ -58,6 +58,17 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repo: repoId, key, text, context }),
     }),
+  // Same route as setComment, with an `anchor` -- an anchored comment is the
+  // same annotation kind narrowed to a line range, not a new one (see
+  // state.js's setAnchoredComment on the server). `anchor` is
+  // { start, end }: 0-based inclusive indices into the change point's own
+  // diffText lines, NOT file line numbers.
+  setAnchoredComment: (repoId, key, anchor, text, context) =>
+    apiFetch('/api/comment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: repoId, key, text, anchor, context }),
+    }),
   setNote: (repoId, key, text, context) =>
     apiFetch('/api/note', {
       method: 'POST',

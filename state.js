@@ -40,7 +40,13 @@ function isValidState(parsed) {
     // checked[]/comments[] data backed up and discarded. See the
     // normalization right after this check's call site in
     // readStateUnlocked.
-    (parsed.notes === undefined || isPlainObject(parsed.notes))
+    (parsed.notes === undefined || isPlainObject(parsed.notes)) &&
+    // Same additive rule for anchoredComments -- see the block comment above
+    // setAnchoredComment. Unlike `notes`, this one is deliberately NOT
+    // defaulted into every loaded state: it stays absent until a repo
+    // actually has an anchored comment, so an existing review's state file
+    // is never rewritten to carry a key it has no use for.
+    (parsed.anchoredComments === undefined || isPlainObject(parsed.anchoredComments))
   );
 }
 
@@ -291,6 +297,136 @@ export async function deleteNote(repoId, key) {
   return removeNote(repoId, key);
 }
 
+// ---------------------------------------------------------------------------
+// Anchored comments -- a comment attached to ONE LINE, or a contiguous run of
+// lines, inside a change point (the GitHub/GitLab PR-review idiom), rather
+// than to the whole 60-line block.
+//
+// -- The anchor is an INDEX RANGE INTO diffText, not a file line number -----
+// `{ start, end }` are 0-based, inclusive indices into
+// `changePoint.diffText.split('\n')` -- the change point's own changed-line
+// text, exactly the string that goes into changePointKey.
+//
+// This looks superficially like the design the spec explicitly rejects
+// ("進度只存行號 — amend 後靜默錯位，勾會跑到別的 function 上"). It is not.
+// That rejection is about FILE line numbers, which move independently of the
+// content they name: a file-line anchor survives an amend as a valid-looking
+// number pointing at whatever code has since slid into that position. An
+// index into diffText cannot do that, because diffText is *inside*
+// changePointKey (see the key derivation at the top of this file). Two
+// outcomes exhaust the space:
+//
+//   * the key survives an amend/rebase => the change point's diffText is
+//     byte-identical => index i names exactly the same line it always did.
+//   * the diffText changed at all => the key changed => the whole record
+//     orphans through the existing path, anchors and all, and is shown to the
+//     user as history rather than silently re-pointed.
+//
+// So no new failure mode is introduced: an anchored comment is exactly as
+// stable as the checkmark and the whole-change-point comment sitting beside
+// it, and stale for exactly the same reasons.
+//
+// -- Why its own top-level map ---------------------------------------------
+// `state.comments` is a map of key -> ONE record and is the shape the human's
+// live reviews are already written in. Reshaping its values into arrays would
+// mean migrating real data on load and would put the untouched
+// whole-change-point path at risk for no benefit. `anchoredComments` is
+// therefore a separate additive map, key -> ARRAY of records, exactly the way
+// `notes` was added: existing files load unchanged (isValidState treats the
+// key as optional), nothing already stored is ever read or rewritten by this
+// code, and the unanchored comment path is untouched line for line.
+//
+// Conceptually this is still ONE annotation kind, not a fourth: an anchored
+// comment carries the same fields a comment does, is counted in
+// stats.comments, is exported wherever a comment is exported, orphans through
+// the same mechanism, and is written through the same editor. The array is a
+// storage container, not a new concept -- the only thing that distinguishes
+// one of these records is that it additionally names a line range.
+//
+// -- Identity within a change point ----------------------------------------
+// (anchorStart, anchorEnd). Writing the same range twice edits in place;
+// empty/whitespace-only text deletes that one range and leaves its siblings
+// alone; deleting the last one drops the key so no empty array lingers.
+// ---------------------------------------------------------------------------
+
+function requireAnchor(methodName, anchor, diffText) {
+  const start = anchor?.start;
+  const end = anchor?.end;
+  if (!Number.isInteger(start) || !Number.isInteger(end)) {
+    throw new Error(`${methodName}: anchor.start and anchor.end are required and must be integers`);
+  }
+  if (start < 0 || end < start) {
+    throw new Error(
+      `${methodName}: anchor must satisfy 0 <= start <= end (got start=${start}, end=${end})`,
+    );
+  }
+  // Validated against the caller's own diffText snapshot, which is the exact
+  // string the indices address. Doing it here means an out-of-range anchor can
+  // never reach the state file, so annotate() below never has to defend
+  // against one (and never has to silently drop a record to do so).
+  const lineCount = diffText.split('\n').length;
+  if (end >= lineCount) {
+    throw new Error(
+      `${methodName}: anchor end ${end} is outside this change point's diffText (${lineCount} lines)`,
+    );
+  }
+  return { start, end };
+}
+
+export async function setAnchoredComment(repoId, key, anchor, text, context) {
+  // Snapshot first: it is also what validates context.filePath/diffText, and
+  // requireAnchor needs context.diffText to bound-check against.
+  const snapshot = buildAnnotationSnapshot('setAnchoredComment', text, context);
+  const { start, end } = requireAnchor('setAnchoredComment', anchor, snapshot.diffText);
+
+  return getRepoLock(repoId)(async () => {
+    const state = await readStateUnlocked(repoId);
+    if (!isPlainObject(state.anchoredComments)) state.anchoredComments = {};
+
+    const existing = Array.isArray(state.anchoredComments[key]) ? state.anchoredComments[key] : [];
+    const rest = existing.filter(
+      (record) => !(record.anchorStart === start && record.anchorEnd === end),
+    );
+
+    if (typeof text !== 'string' || text.trim() === '') {
+      if (rest.length === 0) delete state.anchoredComments[key];
+      else state.anchoredComments[key] = rest;
+    } else {
+      state.anchoredComments[key] = [...rest, { ...snapshot, anchorStart: start, anchorEnd: end }];
+    }
+
+    // Keep the map itself absent when nothing uses it, so a repo that never
+    // anchors a comment keeps the exact state-file shape it has today.
+    if (Object.keys(state.anchoredComments).length === 0) delete state.anchoredComments;
+
+    await writeStateUnlocked(repoId, state);
+  });
+}
+
+export async function deleteAnchoredComments(repoId, key) {
+  return getRepoLock(repoId)(async () => {
+    const state = await readStateUnlocked(repoId);
+    if (!isPlainObject(state.anchoredComments)) return;
+    delete state.anchoredComments[key];
+    if (Object.keys(state.anchoredComments).length === 0) delete state.anchoredComments;
+    await writeStateUnlocked(repoId, state);
+  });
+}
+
+// The public projection of one stored record: only the anchor and the text.
+// updatedAt / filePath / functionName / diffText are storage details (the
+// snapshot exists so an orphan can explain itself), the same way a comment's
+// are never exposed on an annotated change point either.
+function publicAnchored(records) {
+  return [...(records ?? [])]
+    .map((record) => ({
+      anchorStart: record.anchorStart,
+      anchorEnd: record.anchorEnd,
+      text: record.text,
+    }))
+    .sort((a, b) => a.anchorStart - b.anchorStart || a.anchorEnd - b.anchorEnd);
+}
+
 // An orphan card in the UI represents one change-point *key*, not one
 // annotation type -- it can carry a comment, a note, or both (see
 // buildAnnotated's orphan collection below), and "Discard" on that card is
@@ -305,6 +441,12 @@ export async function discardOrphan(repoId, key) {
     const state = await readStateUnlocked(repoId);
     delete state.comments[key];
     delete state.notes[key];
+    // Anchored comments belong to the same change-point identity, so the same
+    // "make this whole entry go away" reasoning applies to them.
+    if (isPlainObject(state.anchoredComments)) {
+      delete state.anchoredComments[key];
+      if (Object.keys(state.anchoredComments).length === 0) delete state.anchoredComments;
+    }
     await writeStateUnlocked(repoId, state);
   });
 }
@@ -330,6 +472,12 @@ function buildAnnotated(state, fileNodes) {
   // keys now unique by construction, a key can in practice only be visited
   // once per walk anyway.
   const countedCommentKeys = new Set();
+  const countedAnchoredKeys = new Set();
+  // Read once: `anchoredComments` is deliberately absent from a state file
+  // until the repo actually has one (see setAnchoredComment), so everything
+  // below reads through this normalized local instead of poking at an
+  // optional field on every change point.
+  const anchoredMap = isPlainObject(state.anchoredComments) ? state.anchoredComments : {};
   let statsTotal = 0;
   let statsChecked = 0;
   let statsComments = 0;
@@ -355,6 +503,7 @@ function buildAnnotated(state, fileNodes) {
         const checked = state.checked[key] === true;
         const commentRecord = Object.hasOwn(state.comments, key) ? state.comments[key] : undefined;
         const noteRecord = Object.hasOwn(state.notes, key) ? state.notes[key] : undefined;
+        const anchoredRecords = anchoredMap[key];
         if (checked) groupChecked += 1;
         // Count distinct comment *keys*, not one per annotated change
         // point, so a comment can never be counted more than once even if
@@ -362,6 +511,15 @@ function buildAnnotated(state, fileNodes) {
         if (commentRecord && !countedCommentKeys.has(key)) {
           countedCommentKeys.add(key);
           statsComments += 1;
+        }
+        // An anchored comment IS a comment (see setAnchoredComment's block
+        // comment) -- it just additionally names a line range -- so each one
+        // counts once here, exactly like the whole-change-point comment
+        // above. Guarded by the same per-key set so a repeated key could
+        // never double-count them either.
+        if (anchoredRecords && !countedAnchoredKeys.has(key)) {
+          countedAnchoredKeys.add(key);
+          statsComments += anchoredRecords.length;
         }
         // Deliberately no stats.notes counterpart: stats is the shared
         // total/checked/comments summary the topbar badge and Markdown
@@ -376,6 +534,9 @@ function buildAnnotated(state, fileNodes) {
           checked,
           comment: commentRecord ? commentRecord.text : null,
           note: noteRecord ? noteRecord.text : null,
+          // Always an array, never undefined: every consumer (export, the
+          // right-pane renderer) can iterate unconditionally.
+          anchoredComments: publicAnchored(anchoredRecords),
         };
       });
 
@@ -415,24 +576,36 @@ function buildAnnotated(state, fileNodes) {
   const orphanKeys = new Set([
     ...Object.keys(state.comments).filter((key) => !seenKeys.has(key)),
     ...Object.keys(state.notes).filter((key) => !seenKeys.has(key)),
+    // A key can carry ONLY anchored comments (no whole-change-point comment,
+    // no note). Leaving it out of this union would silently drop exactly the
+    // annotations this feature exists to make, on exactly the amend that
+    // makes them stale.
+    ...Object.keys(anchoredMap).filter((key) => !seenKeys.has(key)),
   ]);
 
   const orphans = [...orphanKeys]
     .map((key) => {
       const commentRecord = Object.hasOwn(state.comments, key) ? state.comments[key] : undefined;
       const noteRecord = Object.hasOwn(state.notes, key) ? state.notes[key] : undefined;
-      const snapshotSource = commentRecord ?? noteRecord;
-      const updatedAt =
-        commentRecord && noteRecord
-          ? commentRecord.updatedAt > noteRecord.updatedAt
-            ? commentRecord.updatedAt
-            : noteRecord.updatedAt
-          : snapshotSource.updatedAt;
+      const anchoredRecords = anchoredMap[key];
+      // Every record for a key carries the same filePath/functionName/
+      // diffText snapshot (they are all written against the same change point
+      // at the time it existed), so any one of them answers "what was this
+      // about". An anchored-only key has neither of the first two, hence the
+      // third fallback -- without it this line would throw on exactly the
+      // orphan shape this feature introduces.
+      const snapshotSource = commentRecord ?? noteRecord ?? anchoredRecords[0];
+      const updatedAt = [commentRecord, noteRecord, ...(anchoredRecords ?? [])]
+        .filter(Boolean)
+        .reduce((latest, record) => (record.updatedAt > latest ? record.updatedAt : latest), '');
 
       return {
         key,
         text: commentRecord ? commentRecord.text : null,
         note: noteRecord ? noteRecord.text : null,
+        // Same independent nullability rule as text/note, in array form: an
+        // orphan can carry any combination of the three.
+        anchored: publicAnchored(anchoredRecords),
         updatedAt,
         filePath: snapshotSource.filePath,
         functionName: snapshotSource.functionName,

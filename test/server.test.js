@@ -1900,3 +1900,120 @@ describe('amend / line-shift invariant', () => {
     }
   });
 });
+
+// ===========================================================================
+// Anchored comments — POST /api/comment with an optional `anchor`.
+// ===========================================================================
+
+describe('/api/comment with an anchor', () => {
+  // A change point with more than one changed line, so an anchor can
+  // meaningfully pick one of them.
+  async function anchorFixture(name) {
+    const repoPath = await trackedTempRepo(name);
+    await writeFile(join(repoPath, 'foo.js'), 'function foo() {\n  return 1;\n}\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add foo']);
+    const base = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    await writeFile(repoPath + '/foo.js', 'function foo() {\n  const a = 2;\n  const b = 3;\n  return a + b;\n}\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'change foo']);
+    const target = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    const repo = await registerRepo(baseUrl, repoPath);
+    const diff = await (
+      await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${base}&target=${target}`)
+    ).json();
+    return { repo, base, target, changePoint: diff.files[0].groups[0].changePoints[0] };
+  }
+
+  function anchorBody(repo, changePoint, anchor, text) {
+    return JSON.stringify({
+      repo: repo.id,
+      key: changePoint.id,
+      text,
+      anchor,
+      context: {
+        filePath: changePoint.filePath,
+        functionName: changePoint.functionName,
+        diffText: changePoint.diffText,
+      },
+    });
+  }
+
+  test('stores an anchored comment and returns it on the next /api/diff', async () => {
+    const { repo, base, target, changePoint } = await anchorFixture('anchor-set');
+
+    const res = await fetch(`${baseUrl}/api/comment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: anchorBody(repo, changePoint, { start: 1, end: 1 }, 'is this used?'),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true });
+
+    const after = await (
+      await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${base}&target=${target}`)
+    ).json();
+    const afterCp = after.files[0].groups[0].changePoints[0];
+    assert.deepEqual(afterCp.anchoredComments, [
+      { anchorStart: 1, anchorEnd: 1, text: 'is this used?' },
+    ]);
+    assert.equal(afterCp.comment, null, 'the unanchored comment slot must be untouched');
+  });
+
+  test('rejects an anchor that runs past the change point with 400, not a 500', async () => {
+    const { repo, changePoint } = await anchorFixture('anchor-oob');
+    const lineCount = changePoint.diffText.split('\n').length;
+
+    const res = await fetch(`${baseUrl}/api/comment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: anchorBody(repo, changePoint, { start: 0, end: lineCount }, 'off the end'),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test('rejects a non-integer anchor with 400', async () => {
+    const { repo, changePoint } = await anchorFixture('anchor-bad-type');
+    const res = await fetch(`${baseUrl}/api/comment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: anchorBody(repo, changePoint, { start: '1', end: '1' }, 'stringly typed'),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  test('an anchored comment reaches the Claude export, pointing at its line', async () => {
+    const { repo, base, target, changePoint } = await anchorFixture('anchor-export');
+    await fetch(`${baseUrl}/api/comment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: anchorBody(repo, changePoint, { start: 1, end: 1 }, 'is b used anywhere?'),
+    });
+
+    const body = await (
+      await fetch(
+        `${baseUrl}/api/export?repo=${repo.id}&base=${base}&target=${target}&format=claude`,
+      )
+    ).json();
+    assert.ok(body.text.includes('is b used anywhere?'), 'the comment must appear');
+    assert.ok(body.text.includes('指向下面這 1 行'), `expected an anchor preamble:\n${body.text}`);
+    assert.ok(/^» /m.test(body.text), 'expected the anchored line to be marked in the full diff');
+  });
+
+  test('is behind the same cross-origin guard as every other /api/ route', async () => {
+    const res = await fetch(`${baseUrl}/api/comment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'http://evil.example' },
+      body: JSON.stringify({
+        repo: 'x',
+        key: 'y',
+        text: 'z',
+        anchor: { start: 0, end: 0 },
+        context: { filePath: 'a', diffText: '+a' },
+      }),
+    });
+    assert.equal(res.status, 403);
+  });
+});

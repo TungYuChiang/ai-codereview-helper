@@ -24,6 +24,7 @@ import { toggleCollapse } from './tree.js';
 import { onToggleCheck } from './nav.js';
 import { moveSelection, openChangePoint } from './pane.js';
 import { enterCommentEdit } from './comments.js';
+import { focusFirstAnchor } from './diff.js';
 import { setViewMode } from './topbar.js';
 import { toggleSidebar } from './prefs.js';
 
@@ -89,6 +90,34 @@ function handleOpenCommentForCurrent() {
   // assumption.
   if (!entry || !entry.commentEl) return;
   enterCommentEdit(entry);
+}
+
+// `a`: put focus on the current change point's FIRST line-anchor button, so
+// anchoring a comment to a line never requires a mouse. From there Arrow
+// Up/Down walk the lines (roving tabindex, see diff.js's buildAnchorCell),
+// Enter/Space open the editor on that line, and Shift+Enter extends the range
+// from the last line picked -- the same three gestures the mouse has.
+//
+// It is a separate key from `c` rather than a mode on it: `c` means "comment
+// on this change point" and must keep meaning exactly that (it is the
+// shortcut people already have in their fingers, and the whole-change-point
+// comment is still the right tool for "this hunk as a whole"). Overloading it
+// -- e.g. `c` anchoring when a line happens to be focused -- would make the
+// same key do two different things depending on invisible state.
+//
+// Unified only: side-by-side has no anchor buttons at all (see comments.js),
+// so this reports that rather than doing nothing, which would look broken.
+function handleAnchorCurrent() {
+  const key = appState.currentKey;
+  if (!key) return;
+  const entry = dom.changePoints.get(key);
+  if (!entry || !entry.contentEl) return;
+  if (focusFirstAnchor(entry)) return;
+  showToast(
+    appState.viewMode === 'side-by-side'
+      ? 'Line anchoring is unified-view only — press 1 to switch.'
+      : 'Nothing to anchor to here.',
+  );
 }
 
 // `u`: cyclic search starting just after the current change point, so a
@@ -159,6 +188,10 @@ function handleGlobalKeydown(e) {
       e.preventDefault();
       handleOpenCommentForCurrent();
       break;
+    case 'a':
+      e.preventDefault();
+      handleAnchorCurrent();
+      break;
     case 'f':
       e.preventDefault();
       handleToggleCurrentFold();
@@ -226,6 +259,7 @@ const SHORTCUT_TABLE = [
   ['x', 'mark reviewed — checking advances, unchecking stays'],
   ['u', 'jump to next unread change point'],
   ['c', 'edit comment on the current change point'],
+  ['a', 'anchor a comment to a line — then ↑/↓ to pick, Enter to write, Shift+Enter for a range'],
   ['f', 'collapse / expand the current function'],
   ['b', 'collapse / expand the whole sidebar'],
   ['1 / 2', 'unified / side-by-side view'],

@@ -99,6 +99,15 @@ export const appState = {
   isEditing: false,
   editingKey: null,
   editingKind: null,
+  // editingKind gained a third value, 'anchored' -- a comment on one line (or
+  // a run of lines) inside a change point, which is the same annotation kind
+  // as 'comment' narrowed to a range rather than a fourth concept (see
+  // comments.js's anchored-comment section). editingAnchor is that range,
+  // { start, end }: 0-based inclusive indices into the change point's own
+  // diffText lines. Null for every other editing kind, and null whenever
+  // nothing is being edited. "Which key" is not enough to identify this
+  // editor, the same way it stopped being enough when notes arrived.
+  editingAnchor: null,
 
   // Sidebar collapse -- whole #tree-pane, not any individual tree node (that
   // is appState.collapsed above). Restored from localStorage on init, see
@@ -128,7 +137,12 @@ export const appState = {
 // appState.currentKey, which is always kept pointing into the displayed
 // file -- see pane.js's openChangePoint/openFile) must null-check first.
 export const dom = {
-  changePoints: new Map(), // key -> { changePoint, group, file, groupKey, leftRow, leftCheckbox, rightContainer, rightCheckbox, contentEl, commentEl, commentBodyEl, noteBodyEl, expand }
+  changePoints: new Map(), // key -> { changePoint, group, file, groupKey, leftRow, leftCheckbox, rightContainer, rightCheckbox, contentEl, commentEl, commentBodyEl, noteBodyEl, expand, anchorRows }
+  // anchorRows is rebuilt from scratch by every renderChangePointContent
+  // (diff.js): anchor index -> { cell, btn } for each of this change point's
+  // own diff lines in unified view. Empty in side-by-side, where anchoring is
+  // deliberately not offered -- see comments.js's anchored-comment block
+  // comment for why.
   // commentEl is the single shared outer wrapper for BOTH the comment and
   // note UI on a change point (comments.js) -- commentBodyEl/noteBodyEl are
   // its two independently-rendered children. Keeping one wrapper instead of
