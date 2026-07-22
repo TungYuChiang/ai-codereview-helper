@@ -759,25 +759,24 @@ describe('toClaudePrompt — anchored comments', () => {
     assert.ok(prompt.includes('第 23-24 行'), `expected the file line range:\n${prompt}`);
   });
 
-  test('marks the anchored lines inside the full diff, so the surrounding context is still readable', () => {
-    const prompt = toClaudePrompt(
-      anchoredCtx([{ anchorStart: 3, anchorEnd: 3, text: 'is nm always set here?' }]),
-    );
+    test('sends ONLY the anchored lines, not the surrounding diff', () => {
+      const prompt = toClaudePrompt(
+        anchoredCtx([{ anchorStart: 3, anchorEnd: 3, text: 'is nm always set here?' }]),
+      );
 
-    // Every diff line is still present...
-    assert.ok(prompt.includes('function processMVPF(mvpf) {'), 'context line must survive');
-    // ...but only the anchored one carries the pointer marker.
-    assert.ok(prompt.includes('» +  if (!nm) return null;'), `expected the anchored line marked:\n${prompt}`);
-    assert.ok(
-      prompt.includes('  +  const nm = node.getAttribute("name");'),
-      'a non-anchored line must be padded to the marker width, not marked',
-    );
-    assert.equal(
-      (prompt.match(/^» /gm) ?? []).length,
-      1,
-      'exactly one diff line may carry the marker',
-    );
-  });
+      assert.ok(prompt.includes('+  if (!nm) return null;'), `expected the anchored line:\n${prompt}`);
+      // Anchoring exists to NOT hand over the rest. A neighbouring line
+      // leaking in means the full diff came along and the anchor bought
+      // nothing.
+      assert.ok(
+        !prompt.includes('const nm = node.getAttribute("name");'),
+        `a non-anchored line must not be exported:\n${prompt}`,
+      );
+      assert.ok(
+        !prompt.includes('function processMVPF(mvpf) {'),
+        'the surrounding function signature must not be exported',
+      );
+    });
 
   test('an anchor on a deleted line is labelled as the OLD file line, never a new one', () => {
     const prompt = toClaudePrompt(

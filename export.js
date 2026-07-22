@@ -175,25 +175,26 @@ function formatClaudeEntry({ file, group, changePoint, text, anchor }, index, re
     // here?" against a 67-line change point makes the reader guess which line
     // "here" is. So the anchored lines are shown TWICE, deliberately --
     //
-    //   1. alone, in their own fence. This is the unambiguous answer to
-    //      "which line", and it is first because it is the thing the comment
-    //      is actually about. Nothing has to be searched for.
-    //   2. marked in place inside the full diff, because a line without its
-    //      surrounding change is often unanswerable ("is nm always set" needs
-    //      to see whether anything above assigns it).
+    // So the anchored lines are shown alone, in their own fence, plus the
+    // real file line number where one exists so the reader can open the file
+    // at the right place instead of scanning for it.
     //
-    // Plus the real file line number where one exists, so the reader can open
-    // the file at the right place instead of scanning it.
+    // The full diff is deliberately NOT repeated underneath. It was at first,
+    // on the theory that a line without its surrounding change is often
+    // unanswerable. But that hands straight back the context the anchor was
+    // drawn to remove -- in practice a 24-line anchor was arriving under a
+    // 60-line diff, and the duplication grows with the size of the change
+    // point, which is exactly when anchoring matters most. Choosing a range
+    // IS the statement that the rest is not what the question is about, and
+    // the preamble already tells the reader to open the file when it needs
+    // more. A comment that really is about the whole change point carries no
+    // anchor, and the else branch below still sends the entire diff.
     const anchoredText = anchoredDiffLines(changePoint, anchor).join('\n');
     const label = anchorLineLabel(changePoint, anchor);
     const count = anchor.end - anchor.start + 1;
     parts.push(
       `我的 comment 指向下面這 ${count} 行${label ? `（${label}）` : ''}：\n` +
         fence(anchoredText, 'diff'),
-    );
-    parts.push(
-      '同一段 diff 的完整內容，行首 » 標記的就是上面那 ' +
-        `${count} 行：\n${fence(formatMarkedLines(changePoint, anchor), 'diff')}`,
     );
   } else {
     parts.push(`Diff：\n${fence(formatRawLines(changePoint.lines), 'diff')}`);
@@ -206,19 +207,6 @@ function formatClaudeEntry({ file, group, changePoint, text, anchor }, index, re
 
 function formatRawLines(lines) {
   return (lines ?? []).map((line) => `${line.type}${line.text}`).join('\n');
-}
-
-// The change point's own diff with a two-character pointer gutter: '» ' on
-// every line the anchor covers, two spaces on every other line so the diff
-// stays column-aligned and readable. It costs the ```diff fence its exact
-// syntax highlighting on those rows, which is a cheap price for a pointer
-// that survives being read as plain text -- and the legend above the block
-// says what the marker means, so nothing is left to inference.
-function formatMarkedLines(changePoint, anchor) {
-  const positions = anchoredLinePositions(changePoint, anchor);
-  return (changePoint.lines ?? [])
-    .map((line, position) => `${positions.has(position) ? '» ' : '  '}${line.type}${line.text}`)
-    .join('\n');
 }
 
 // Wrap `content` in a fenced code block whose backtick run is guaranteed to

@@ -2078,7 +2078,16 @@ describe('/api/comment with an anchor', () => {
     ).json();
     assert.ok(body.text.includes('is b used anywhere?'), 'the comment must appear');
     assert.ok(body.text.includes('指向下面這 1 行'), `expected an anchor preamble:\n${body.text}`);
-    assert.ok(/^» /m.test(body.text), 'expected the anchored line to be marked in the full diff');
+    // Counted, not asserted absent by wording: the first version of this
+    // checked that a particular sentence was missing, and that sentence no
+    // longer exists anywhere, so it could never fail. Two fences is what a
+    // regression actually looks like -- the anchored lines plus the whole
+    // diff underneath them.
+    assert.equal(
+      (body.text.match(/```diff/g) ?? []).length,
+      1,
+      `an anchored comment must ship one fence, not also the whole diff:\n${body.text}`,
+    );
   });
 
   test('is behind the same cross-origin guard as every other /api/ route', async () => {
