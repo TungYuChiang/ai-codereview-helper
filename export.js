@@ -8,7 +8,9 @@
 
 import { join } from 'node:path';
 
-const NO_QUESTIONS_NOTE = '這次 review 沒有留下任何疑問（沒有變更點被加上 comment）。';
+// 用「comment」而不是「疑問」：一則 comment 可能是疑問，也可能是建議、或
+// 「這裡我想確認一下」。UI 上建立它的按鈕就叫 "+ Comment"，這裡跟著同一個詞。
+const NO_QUESTIONS_NOTE = '這次 review 沒有留下任何 comment（沒有變更點被加上 comment）。';
 // Distinct from NO_QUESTIONS_NOTE on purpose: saying "no questions" when
 // comments do exist -- they just all landed in the orphan list -- would be
 // false. Orphans are dropped from this export by design (the code they
@@ -17,7 +19,7 @@ const NO_QUESTIONS_NOTE = '這次 review 沒有留下任何疑問（沒有變更
 // than being handed a blank or misleading document.
 const ORPHANS_ONLY_NOTE =
   '這次 review 留下的 comment 對應的程式碼都已被修改或移除，' +
-  '因此沒有可以送出的疑問。這些紀錄仍保留在 Markdown 匯出與畫面上。';
+  '因此沒有可以送出的 comment。這些紀錄仍保留在 Markdown 筆記與畫面上。';
 const FILE_LEVEL_LABEL = '(檔案層)';
 
 // ---------------------------------------------------------------------------
@@ -45,8 +47,9 @@ function collectCommentedEntries(files) {
 export function toClaudePrompt(ctx) {
   const { repoPath, files, orphans } = ctx;
   const intro =
-    '這是一份 code review 的疑問清單，每一則都是我看 diff 時留下的疑問，' +
-    '請針對每一則實際查證程式碼（必要時打開檔案）並回答。';
+    '這是一份 code review 的 comment 清單，每一則都是我看 diff 時留下的，' +
+    '可能是疑問，也可能是建議或我想確認的地方。' +
+    '請針對每一則實際查證程式碼（必要時打開檔案）並回應。';
 
   const entries = collectCommentedEntries(files);
   // Notes are deliberately excluded from this export end to end -- see the

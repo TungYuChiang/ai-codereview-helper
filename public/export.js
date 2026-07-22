@@ -11,23 +11,31 @@
 import { appState, createEl, topbarEl, appEl, bodyEl } from './state.js';
 import { api, clearError, showError } from './api.js';
 
-// Full labels ("匯出我的疑問（Claude）" / "匯出筆記（Markdown）") no longer fit
-// the top bar once repo/branch names are realistically long -- they were the
-// single biggest contributor to the bar wrapping onto a second row (see
-// docs/dev-log/screenshots/106-read-vs-unread-adjacent-github-light.png).
-// Shortened to the same treatment already used for long select values
-// elsewhere in this bar: visible text is trimmed, the full original label
-// moves to `title` so it's still a hover away, and `aria-label` keeps the
-// full label as the accessible name so screen readers lose nothing.
+// -- Wording ---------------------------------------------------------------
+// "複製", not "匯出": these buttons write to the clipboard and never touch the
+// filesystem. The spec settled that deliberately ("都複製到剪貼簿，不寫檔"),
+// so "匯出" was promising a file that never arrives.
+//
+// "Comment" / "Note", not "疑問" / "筆記": the buttons that *create* these are
+// labelled "+ Comment" and "+ Note", and one concept should not carry two
+// vocabularies depending on which end of it you are looking at. It also drops
+// a claim that was simply untrue -- "疑問" asserts every entry is a question,
+// but a comment is just as often a suggestion.
+//
+// Still short, for the original reason: full labels were the single biggest
+// contributor to the top bar wrapping onto a second row once repo/branch
+// names got realistically long. Visible text is trimmed, `title` holds the
+// long form for hover, and `aria-label` carries it as the accessible name so
+// screen readers lose nothing.
 const exportGroupEl = createEl('div', { className: 'topbar-group export-group' });
-const exportClaudeBtnEl = createEl('button', { className: 'export-btn', text: '匯出疑問' });
+const exportClaudeBtnEl = createEl('button', { className: 'export-btn', text: '複製 Comment' });
 exportClaudeBtnEl.type = 'button';
-exportClaudeBtnEl.title = '匯出我的疑問（Claude）';
-exportClaudeBtnEl.setAttribute('aria-label', '匯出我的疑問（Claude）');
-const exportMarkdownBtnEl = createEl('button', { className: 'export-btn', text: '匯出筆記' });
+exportClaudeBtnEl.title = '複製我的 Comment（給 Claude）';
+exportClaudeBtnEl.setAttribute('aria-label', '複製我的 Comment（給 Claude）');
+const exportMarkdownBtnEl = createEl('button', { className: 'export-btn', text: '複製 Note' });
 exportMarkdownBtnEl.type = 'button';
-exportMarkdownBtnEl.title = '匯出筆記（Markdown）';
-exportMarkdownBtnEl.setAttribute('aria-label', '匯出筆記（Markdown）');
+exportMarkdownBtnEl.title = '複製筆記（Markdown，含 Comment 與 Note）';
+exportMarkdownBtnEl.setAttribute('aria-label', '複製筆記（Markdown，含 Comment 與 Note）');
 exportGroupEl.append(exportClaudeBtnEl, exportMarkdownBtnEl);
 topbarEl.appendChild(exportGroupEl);
 

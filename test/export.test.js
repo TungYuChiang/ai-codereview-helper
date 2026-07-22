@@ -283,7 +283,7 @@ describe('toClaudePrompt', () => {
     assert.ok(!prompt.includes('note-only-line-should-not-appear'), 'note-only diff must not appear');
     assert.ok(!prompt.includes('this is just a note to self'), 'note text must never reach the Claude prompt');
     assert.ok(
-      prompt.includes('這次 review 沒有留下任何疑問'),
+      prompt.includes('這次 review 沒有留下任何 comment'),
       'a note-only review (no comments, no orphans) has no real questions to send',
     );
   });
@@ -344,7 +344,7 @@ describe('toClaudePrompt', () => {
 
     const prompt = toClaudePrompt(ctx);
     assert.ok(
-      !prompt.includes('這次 review 沒有留下任何疑問'),
+      !prompt.includes('這次 review 沒有留下任何 comment'),
       'must not claim there are no questions when a comment did exist, just orphaned',
     );
     // Orphans are dropped from this export entirely -- the point of this
@@ -399,7 +399,7 @@ describe('toClaudePrompt', () => {
     });
     assert.equal(typeof prompt, 'string');
     assert.ok(prompt.length > 0);
-    assert.ok(prompt.includes('這次 review 沒有留下任何疑問'), 'expected the plain "no questions" note');
+    assert.ok(prompt.includes('這次 review 沒有留下任何 comment'), 'expected the plain "no questions" note');
   });
 
   test('is a pure function: does not mutate ctx', () => {
