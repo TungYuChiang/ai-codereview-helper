@@ -22,8 +22,12 @@ export const addRepoInputEl = document.getElementById('add-repo-input');
 export const addRepoCancelEl = document.getElementById('add-repo-cancel');
 export const addRepoErrorEl = document.getElementById('add-repo-error');
 
-export const baseSelectEl = document.getElementById('base-select');
-export const targetSelectEl = document.getElementById('target-select');
+// Mount points for the two ref comboboxes (topbar.js fills them). These used
+// to be the <select> elements themselves; the pickers are now custom
+// widgets, so the rest of the app talks to the handles topbar.js exports
+// rather than to a DOM element's .value.
+export const basePickerEl = document.getElementById('base-picker');
+export const targetPickerEl = document.getElementById('target-picker');
 export const workingTreeHintEl = document.getElementById('working-tree-hint');
 
 export const viewUnifiedBtnEl = document.getElementById('view-unified-btn');

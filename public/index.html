@@ -30,10 +30,14 @@
         <span id="add-repo-error" class="field-error"></span>
       </form>
 
+      <!-- Mount points only. Both ref pickers are type-to-filter comboboxes
+           built in combobox.js and inserted by topbar.js. They replaced
+           native <select>s, which sorted alphabetically and buried today's
+           branch behind a 35-entry scroll. -->
       <div class="topbar-group">
-        <select id="base-select" aria-label="base ref"></select>
+        <div id="base-picker" class="ref-picker"></div>
         <span class="ref-sep">&hellip;</span>
-        <select id="target-select" aria-label="target ref"></select>
+        <div id="target-picker" class="ref-picker"></div>
       </div>
 
       <span id="working-tree-hint" class="hint" hidden>

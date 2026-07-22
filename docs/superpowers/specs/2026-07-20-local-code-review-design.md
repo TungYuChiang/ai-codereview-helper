@@ -44,6 +44,11 @@
 
 - base：選任一 ref（branch / tag / commit）
 - target：選任一 ref，或特殊項 **Working Tree**
+- 兩個 picker 都是可打字篩選的 combobox（不是原生 `<select>`），清單依 commit
+  日期由新到舊排序並顯示相對時間；打 `25206` 就能把 35 條 branch 縮到一條
+- target picker 會把「已經合併進 base」的 branch 移到最下面並淡化，標註
+  「已合併 · diff 會是空的」——因為 three-dot diff 對已合併的 target 會是空的，
+  這個標記是在講「選了會看不到東西」，不是在講 branch 很舊
 - ref↔ref 時：`git diff <base>...<target>`（three-dot，共同祖先起算，PR review 標準語意）
 - Working Tree 時：`git diff <base>`（含未 commit 改動）
 
@@ -174,7 +179,10 @@ git diff <base>...<target>   ← ref 由 UI 決定
 ### API 概要
 
 - `GET /api/repos` — repo 清單
-- `GET /api/refs?repo=` — 該 repo 的 branch / tag 清單
+- `GET /api/refs?repo=` — 該 repo 的 branch / tag 清單，每筆為 `{ name, date }`，
+  依 commit 日期由新到舊排序（`git for-each-ref`，不是字母序）
+- `GET /api/merged?repo=&base=` — 已合併進 `base` 的 branch 名稱。因為
+  「已合併」是 (ref, base) 的性質，換 base 就會失效，所以獨立成一支 API
 - `GET /api/diff?repo=&base=&target=` — 三層樹（含已合併的勾與 comment）
 - `POST /api/check` — 勾 / 取消勾單一變更點
 - `POST /api/comment` — 寫 / 改 / 刪 comment

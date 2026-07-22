@@ -51,23 +51,132 @@ function runGit(repoPath, args) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Ref listing.
+//
+// `git branch --list` / `git tag --list` sort alphabetically and carry no
+// date. On a working repo with 35+ `fix/<issue-number>` branches that puts
+// the numerically-lowest -- i.e. oldest and least relevant -- branch at the
+// top and buries today's work. `for-each-ref` can sort by date AND emit the
+// date in the same pass, so both pickers get recency ordering and a
+// human-readable "3 天前" for free, with no extra git call.
+//
+// Two details worth not re-deriving later:
+//
+//   - Branches sort/format on `committerdate`; TAGS use `creatordate`.
+//     An annotated tag is a tag *object*, not a commit: `%(committerdate)`
+//     on it is the empty string, which would give the front end a blank to
+//     sort and format. `creatordate` is git's own "the date of whatever
+//     this ref points at" field and is correct for both lightweight tags
+//     (commit date) and annotated ones (tagger date).
+//
+//   - `--end-of-options` goes AFTER the options, immediately before the
+//     ref pattern. for-each-ref genuinely stops parsing options there, so
+//     putting it first (the habit from `git diff`) makes git read
+//     `--format=...` as a *pattern* and silently fall back to the default
+//     output format. There is no attacker-controlled argument in this
+//     command at all -- the pattern is a literal -- so this separator is
+//     pure future-proofing, but a future-proofing that silently breaks the
+//     format is worse than none, hence the placement.
+// ---------------------------------------------------------------------------
+
+// A space, deliberately, and it is unambiguous: git's own check-ref-format
+// forbids spaces in ref names, and an iso-strict date contains none either,
+// so the FIRST space on a line is always the name/date boundary no matter
+// what the branch is called. (NUL would be the reflex choice, but it cannot
+// be used here at all -- the separator travels inside an argv element, and
+// execve truncates argv strings at the first NUL byte.)
+const FIELD_SEPARATOR = ' ';
+
 /**
- * 列出 repo 的 ref。
+ * 列出 repo 的 ref，依 commit 日期由新到舊排序。
  * @param {string} repoPath
- * @returns {Promise<{ branches: string[], tags: string[], current: string }>}
+ * @returns {Promise<{
+ *   branches: { name: string, date: string }[],
+ *   tags: { name: string, date: string }[],
+ *   current: string,
+ * }>}
  */
 export async function listRefs(repoPath) {
   const [branchOut, tagOut, currentOut] = await Promise.all([
-    runGit(repoPath, ['branch', '--list', '--format=%(refname:short)']),
-    runGit(repoPath, ['tag', '--list']),
+    runGit(repoPath, [
+      'for-each-ref',
+      '--sort=-committerdate',
+      `--format=%(refname:short)${FIELD_SEPARATOR}%(committerdate:iso-strict)`,
+      END_OF_OPTIONS,
+      'refs/heads',
+    ]),
+    runGit(repoPath, [
+      'for-each-ref',
+      '--sort=-creatordate',
+      `--format=%(refname:short)${FIELD_SEPARATOR}%(creatordate:iso-strict)`,
+      END_OF_OPTIONS,
+      'refs/tags',
+    ]),
     runGit(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']),
   ]);
 
   return {
-    branches: splitLines(branchOut),
-    tags: splitLines(tagOut),
+    branches: parseDatedRefs(branchOut),
+    tags: parseDatedRefs(tagOut),
     current: currentOut.trim(),
   };
+}
+
+function parseDatedRefs(output) {
+  const refs = [];
+  for (const line of output.split('\n')) {
+    if (line.length === 0) continue;
+    const sep = line.indexOf(FIELD_SEPARATOR);
+    // A ref with no separator can only mean the format string did not take
+    // effect. Keeping the name with a null date is strictly better than
+    // dropping the ref: the picker still lists it, just without a date.
+    if (sep === -1) {
+      refs.push({ name: line.trim(), date: null });
+      continue;
+    }
+    const name = line.slice(0, sep);
+    const date = line.slice(sep + 1).trim();
+    if (name.length === 0) continue;
+    refs.push({ name, date: date.length > 0 ? date : null });
+  }
+  return refs;
+}
+
+/**
+ * 列出已經合併進 `base` 的 branch。
+ *
+ * 為什麼重要：這個工具用 three-dot（`base...target`）取 diff，所以一個已經
+ * 合併進 base 的 target 產出的 diff 是空的。前端要據此標記，使用者才不會
+ * 選到一個「什麼都看不到」的 branch。
+ *
+ * Security: `base` is caller-supplied and server.js's requireRef has already
+ * rejected leading `-`, whitespace, control characters and `:` before it gets
+ * here. This layer stands on its own regardless, and NOT via the usual
+ * `--end-of-options` trick -- `git for-each-ref --merged <base>` puts the ref
+ * in its own argv slot where `--end-of-options` cannot protect it (see the
+ * placement note above: for-each-ref really does stop parsing options there,
+ * so the separator would have to come *after* `--merged`'s value to guard
+ * it, which is a contradiction). Instead the ref is attached to the option
+ * with `=`: `--merged=<base>` is a single argv element whose value git parses
+ * as an object name and nothing else, so `--merged=--output=/tmp/PWNED` fails
+ * with "malformed object name" rather than writing a file. The trailing
+ * `--end-of-options` still guards the literal pattern.
+ *
+ * @param {string} repoPath
+ * @param {string} base
+ * @returns {Promise<string[]>} branch 名稱（順序同 listRefs，由新到舊）
+ */
+export async function listMergedBranches(repoPath, base) {
+  const out = await runGit(repoPath, [
+    'for-each-ref',
+    `--merged=${base}`,
+    '--sort=-committerdate',
+    '--format=%(refname:short)',
+    END_OF_OPTIONS,
+    'refs/heads',
+  ]);
+  return splitLines(out);
 }
 
 function splitLines(output) {

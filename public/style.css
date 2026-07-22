@@ -748,16 +748,148 @@ select:focus-visible {
   white-space: nowrap;
 }
 
-/* Same problem, same fix, for branch/tag names -- ticket-prefixed branches
- * routinely run 40+ characters and were the single biggest contributor to
- * the top bar wrapping onto a second row. Full name still reachable via
- * title (see updateRefSelectTitles() in app.js). */
-#base-select,
-#target-select {
+/* ---------------------------------------------------------------------- */
+/* Ref combobox (base / target pickers)                                    */
+/*                                                                          */
+/* Replaces the native <select>s. The width cap is the same constraint that */
+/* applied to them and is still live: ticket-prefixed branches routinely    */
+/* run 40+ characters and were the single biggest contributor to the top    */
+/* bar wrapping onto a second row (the same pressure that forced the export */
+/* buttons to be shortened). The full name stays reachable via the input's  */
+/* title -- see updateRefSelectTitles() in topbar.js.                       */
+/* ---------------------------------------------------------------------- */
+
+.combobox {
+  position: relative;
+  display: inline-block;
+}
+
+/* Off-screen width probe -- must match .combobox-input's font exactly or the
+ * measurement it produces is wrong. See syncWidth() in combobox.js. */
+.combobox-sizer {
+  position: absolute;
+  visibility: hidden;
+  white-space: pre;
+  pointer-events: none;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+}
+
+.combobox-input {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  color: var(--color-fg);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  padding: 4px 8px;
+  /* Width is set inline by syncWidth() in combobox.js (content-sized when
+   * closed, capped while focused); these are the fallback bounds. */
+  width: 160px;
   max-width: 160px;
+  text-overflow: ellipsis;
+  transition: border-color var(--transition-fast);
+}
+
+.combobox-input:hover {
+  border-color: var(--color-fg-muted);
+}
+
+/* The visible focus ring the native <select> gave for free. :focus rather
+ * than :focus-visible: this control is routinely entered by mouse and then
+ * driven by keyboard, so the ring has to be there either way. */
+.combobox-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+/* Absolutely positioned so opening the list never reflows the top bar. */
+.combobox-list {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  max-width: 420px;
+  max-height: 340px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.combobox-option {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.combobox-option-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-fg);
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.combobox-option-meta {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--color-fg-faint);
+  flex: 0 0 auto;
+}
+
+/* The empty-diff warning, not a "stale branch" badge -- see the item-list
+ * comment in topbar.js. Note-colored (attention), not error-colored. */
+.combobox-option-badge {
+  font-size: 10.5px;
+  color: var(--color-fg-muted);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 999px;
+  padding: 0 6px;
+  flex: 0 0 auto;
+}
+
+.combobox-option.dimmed .combobox-option-name {
+  color: var(--color-fg-faint);
+}
+
+.combobox-option:hover,
+.combobox-option.active {
+  background: var(--color-track);
+}
+
+.combobox-option.active {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+.combobox-sep {
+  padding: 6px 10px 3px;
+  font-size: 10.5px;
+  color: var(--color-fg-faint);
+  border-top: 1px solid var(--color-border);
+  margin-top: 4px;
   white-space: nowrap;
+}
+
+.combobox-sep:first-child {
+  border-top: none;
+  margin-top: 0;
+}
+
+.combobox-empty {
+  padding: 6px 10px;
+  font-size: 11.5px;
+  color: var(--color-fg-faint);
 }
 
 input[type="text"] {

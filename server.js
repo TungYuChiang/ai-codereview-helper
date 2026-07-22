@@ -502,6 +502,38 @@ async function routeApi(req, res, url, pathname) {
     return sendJson(res, 200, refs);
   }
 
+  // Which branches are already merged into `base`.
+  //
+  // Why this is a route of its own rather than a `merged` field on
+  // /api/refs: merged-ness is a property of the (ref, base) PAIR, not of the
+  // ref, so it goes stale the instant the user changes the base picker while
+  // the ref list itself does not. Folding it into /api/refs would mean either
+  // refetching the whole ref list on every base change (wasteful and, worse,
+  // it re-sorts and re-renders the picker under the user's cursor), or
+  // precomputing merged-ness for every ref against every possible base --
+  // O(n^2) git calls to answer a question about the one base actually
+  // selected. This way each base change costs exactly one cheap git call
+  // (`for-each-ref --merged=<base>`, which answers for all branches at once),
+  // and the ref list is fetched once per repo.
+  //
+  // `base` is caller-supplied and goes into a git command line, so it runs
+  // through the same requireRef as /api/diff's -- see the ref-validation
+  // block above. The route sits after assertNotCrossOrigin() at the top of
+  // routeApi like every other /api/ route; it does not get its own guard and
+  // must not bypass that one.
+  if (pathname === '/api/merged' && method === 'GET') {
+    const repo = await getRepoOr404(url.searchParams.get('repo'));
+    const base = requireRef(url.searchParams.get('base'), 'base');
+
+    let merged;
+    try {
+      merged = await git.listMergedBranches(repo.path, base);
+    } catch (err) {
+      throw new HttpError(400, err.message);
+    }
+    return sendJson(res, 200, { merged });
+  }
+
   if (pathname === '/api/diff' && method === 'GET') {
     const repo = await getRepoOr404(url.searchParams.get('repo'));
     const base = requireRef(url.searchParams.get('base'), 'base');

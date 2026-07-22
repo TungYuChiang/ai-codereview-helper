@@ -34,6 +34,14 @@ export const api = {
       body: JSON.stringify({ path }),
     }).then((b) => b.repo),
   getRefs: (repoId) => apiFetch(`/api/refs?repo=${encodeURIComponent(repoId)}`),
+  // Branch names already merged into `base`. Its own call rather than a
+  // field on getRefs because merged-ness is a property of the (ref, base)
+  // pair and so goes stale on every base change, while the ref list does
+  // not -- see the /api/merged route comment in server.js.
+  getMerged: (repoId, base) =>
+    apiFetch(
+      `/api/merged?repo=${encodeURIComponent(repoId)}&base=${encodeURIComponent(base)}`,
+    ).then((b) => b.merged),
   getDiff: (repoId, base, target) =>
     apiFetch(
       `/api/diff?repo=${encodeURIComponent(repoId)}&base=${encodeURIComponent(base)}&target=${encodeURIComponent(target)}`,

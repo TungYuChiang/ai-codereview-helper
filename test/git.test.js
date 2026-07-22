@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { listRefs, getDiff, getFileContent, parseDiff } from '../git.js';
+import { listRefs, listMergedBranches, getDiff, getFileContent, parseDiff } from '../git.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -21,6 +21,23 @@ async function makeTempRepo() {
   await git(dir, ['config', 'user.name', 'Test']);
   await git(dir, ['commit', '--allow-empty', '-q', '-m', 'init']);
   return dir;
+}
+
+/**
+ * Creates `branchName` off the current HEAD and puts one commit on it with an
+ * explicit author/committer date, then returns to the previous branch. Both
+ * date variables have to be set: the recency ordering this exercises reads
+ * committerdate, which git derives from the clock, not from --date.
+ */
+async function commitOnBranch(repoPath, branchName, isoDate) {
+  const previous = (await git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+  await git(repoPath, ['checkout', '-q', '-b', branchName]);
+  await execFileAsync(
+    'git',
+    ['commit', '--allow-empty', '-q', '-m', `commit on ${branchName}`, '--date', isoDate],
+    { cwd: repoPath, env: { ...process.env, GIT_COMMITTER_DATE: isoDate } },
+  );
+  await git(repoPath, ['checkout', '-q', previous]);
 }
 
 // ---------------------------------------------------------------------------
@@ -261,9 +278,106 @@ describe('listRefs', () => {
       await git(repo, ['branch', 'feature-x']);
       await git(repo, ['tag', 'v1.0.0']);
       const refs = await listRefs(repo);
-      assert.ok(refs.branches.includes('feature-x'));
-      assert.ok(refs.tags.includes('v1.0.0'));
-      assert.ok(refs.branches.includes(refs.current));
+      assert.ok(refs.branches.some((b) => b.name === 'feature-x'));
+      assert.ok(refs.tags.some((t) => t.name === 'v1.0.0'));
+      assert.ok(refs.branches.some((b) => b.name === refs.current));
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('orders branches by commit date, newest first — not alphabetically', async () => {
+    const repo = await makeTempRepo();
+    try {
+      // Named so that alphabetical order is the exact reverse of the
+      // chronological order we want: `fix/10001` sorts first alphabetically
+      // but is the oldest commit. This is the human's actual situation --
+      // 35+ `fix/<issue-number>` branches where the numerically-lowest is
+      // the least relevant.
+      await commitOnBranch(repo, 'fix/10001', '2020-01-01T00:00:00+00:00');
+      await commitOnBranch(repo, 'fix/20002', '2023-06-01T00:00:00+00:00');
+      await commitOnBranch(repo, 'fix/30003', '2026-07-01T00:00:00+00:00');
+
+      const refs = await listRefs(repo);
+      const names = refs.branches.map((b) => b.name).filter((n) => n.startsWith('fix/'));
+      assert.deepEqual(names, ['fix/30003', 'fix/20002', 'fix/10001']);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('carries each branch commit date as a parseable ISO timestamp', async () => {
+    const repo = await makeTempRepo();
+    try {
+      await commitOnBranch(repo, 'dated', '2021-03-04T05:06:07+00:00');
+      const refs = await listRefs(repo);
+      const branch = refs.branches.find((b) => b.name === 'dated');
+      assert.ok(branch, 'expected the branch to be listed');
+      assert.equal(new Date(branch.date).toISOString(), '2021-03-04T05:06:07.000Z');
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('carries a date for annotated tags too (which have no committerdate)', async () => {
+    const repo = await makeTempRepo();
+    try {
+      // An annotated tag is a tag *object*: %(committerdate) is empty on it,
+      // so a naive committerdate format would hand the front end an
+      // unsortable, unformattable blank.
+      await git(repo, ['tag', '-a', 'v9.9.9', '-m', 'annotated']);
+      const refs = await listRefs(repo);
+      const tag = refs.tags.find((t) => t.name === 'v9.9.9');
+      assert.ok(tag, 'expected the tag to be listed');
+      assert.ok(!Number.isNaN(Date.parse(tag.date)), `expected a parseable date, got ${JSON.stringify(tag.date)}`);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('listMergedBranches', () => {
+  test('lists exactly the branches already merged into the given base', async () => {
+    const repo = await makeTempRepo();
+    try {
+      const trunk = (await git(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+      await commitOnBranch(repo, 'merged-one', '2024-01-01T00:00:00+00:00');
+      await git(repo, ['merge', '-q', '--no-ff', '-m', 'merge one', 'merged-one']);
+      await commitOnBranch(repo, 'still-open', '2024-02-01T00:00:00+00:00');
+
+      const merged = await listMergedBranches(repo, trunk);
+      assert.ok(merged.includes('merged-one'), 'merged branch must be reported');
+      assert.ok(!merged.includes('still-open'), 'unmerged branch must NOT be reported');
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('cannot be tricked into treating the base ref as a git option', async () => {
+    const repo = await makeTempRepo();
+    const probe = join(tmpdir(), `lcr-git-pwned-merged-${process.pid}-${Date.now()}.txt`);
+    try {
+      // A bare assert.rejects is too weak here, for the same reason the
+      // getDiff-target test above spells out: for-each-ref has no
+      // file-writing option, so `--output=<probe>` fails either way. What
+      // must be proved is *how* it fails. With the ref attached to the
+      // option (`--merged=<base>`, one argv element) git parses the value as
+      // an object name and says "malformed object name". Passed as its own
+      // argv element (`--merged <base>`) git parses it as an option and says
+      // "unknown option" -- which is the shape that would matter the moment
+      // someone swaps in a git command that does have a dangerous option.
+      await assert.rejects(
+        () => listMergedBranches(repo, `--output=${probe}`),
+        (err) => {
+          assert.match(err.message, /malformed object name/);
+          assert.doesNotMatch(err.message, /unknown option/);
+          return true;
+        },
+      );
+      await assert.rejects(
+        () => import('node:fs/promises').then((fs) => fs.access(probe)),
+        'git executed an injected option and wrote a file',
+      );
     } finally {
       await rm(repo, { recursive: true, force: true });
     }

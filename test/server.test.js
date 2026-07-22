@@ -24,6 +24,23 @@ async function makeTempRepo(label = 'repo') {
   return dir;
 }
 
+/**
+ * Creates `branchName` off the current HEAD with one commit on it at an
+ * explicit date, then returns to the previous branch. GIT_COMMITTER_DATE has
+ * to be set as well as --date: recency ordering reads committerdate, which
+ * git otherwise takes from the wall clock.
+ */
+async function commitOnBranch(repoPath, branchName, isoDate) {
+  const previous = (await git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+  await git(repoPath, ['checkout', '-q', '-b', branchName]);
+  await execFileAsync(
+    'git',
+    ['commit', '--allow-empty', '-q', '-m', `commit on ${branchName}`, '--date', isoDate],
+    { cwd: repoPath, env: { ...process.env, GIT_COMMITTER_DATE: isoDate } },
+  );
+  await git(repoPath, ['checkout', '-q', previous]);
+}
+
 // ---------------------------------------------------------------------------
 // Shared server-per-test setup. LCR_HOME is redirected to a fresh temp dir
 // for every test so nothing ever touches the real ~/.local-code-review.
@@ -286,8 +303,35 @@ describe('/api/refs', () => {
     const res = await fetch(`${baseUrl}/api/refs?repo=${repo.id}`);
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.ok(body.branches.includes(body.current));
-    assert.ok(body.tags.includes('v1.0.0'));
+    assert.ok(body.branches.some((b) => b.name === body.current));
+    assert.ok(body.tags.some((t) => t.name === 'v1.0.0'));
+  });
+
+  test('returns each ref as { name, date }, not a bare string', async () => {
+    const repoPath = await trackedTempRepo('refs-shape');
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const res = await fetch(`${baseUrl}/api/refs?repo=${repo.id}`);
+    const body = await res.json();
+    const branch = body.branches[0];
+    assert.equal(typeof branch, 'object');
+    assert.equal(typeof branch.name, 'string');
+    assert.ok(
+      !Number.isNaN(Date.parse(branch.date)),
+      `expected a parseable date, got ${JSON.stringify(branch.date)}`,
+    );
+  });
+
+  test('orders branches newest-first, so the picker is not alphabetical', async () => {
+    const repoPath = await trackedTempRepo('refs-order');
+    await commitOnBranch(repoPath, 'fix/10001', '2020-01-01T00:00:00+00:00');
+    await commitOnBranch(repoPath, 'fix/30003', '2026-07-01T00:00:00+00:00');
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const res = await fetch(`${baseUrl}/api/refs?repo=${repo.id}`);
+    const body = await res.json();
+    const names = body.branches.map((b) => b.name).filter((n) => n.startsWith('fix/'));
+    assert.deepEqual(names, ['fix/30003', 'fix/10001']);
   });
 
   test('returns 404 for an unknown repo id', async () => {
@@ -295,6 +339,76 @@ describe('/api/refs', () => {
     assert.equal(res.status, 404);
     const body = await res.json();
     assert.ok(body.error);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /api/merged -- which branches are already merged into the selected base.
+// Its own route rather than a field on /api/refs: merged-ness is relative to
+// the base, so it changes on every base switch while the ref list does not.
+// ---------------------------------------------------------------------------
+
+describe('/api/merged', () => {
+  test('lists exactly the branches already merged into the given base', async () => {
+    const repoPath = await trackedTempRepo('merged');
+    const trunk = (await git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+    await commitOnBranch(repoPath, 'done-already', '2024-01-01T00:00:00+00:00');
+    await git(repoPath, ['merge', '-q', '--no-ff', '-m', 'merge', 'done-already']);
+    await commitOnBranch(repoPath, 'still-open', '2024-02-01T00:00:00+00:00');
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const res = await fetch(`${baseUrl}/api/merged?repo=${repo.id}&base=${encodeURIComponent(trunk)}`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(Array.isArray(body.merged));
+    assert.ok(body.merged.includes('done-already'));
+    assert.ok(!body.merged.includes('still-open'));
+  });
+
+  test('a base starting with a dash is rejected by requireRef, not handed to git', async () => {
+    const repoPath = await trackedTempRepo('merged-inject');
+    const repo = await registerRepo(baseUrl, repoPath);
+    const probe = join(tmpdir(), `lcr-PWNED-merged-${process.pid}-${Date.now()}.txt`);
+
+    const res = await fetch(
+      `${baseUrl}/api/merged?repo=${repo.id}&base=${encodeURIComponent(`--output=${probe}`)}`,
+    );
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    // Must be requireRef's own message. This route takes the base ref
+    // straight into a git command line, so a 400 that actually came from
+    // git's own "malformed object name" would mean the new endpoint skipped
+    // the validation layer entirely -- which is the mistake this test exists
+    // to catch, and a bare status assertion could not tell the two apart.
+    assert.match(body.error, /base must not start with '-'/);
+    assert.equal(await fileExists(probe), false);
+  });
+
+  test('a base containing a colon or whitespace is rejected with 400', async () => {
+    const repoPath = await trackedTempRepo('merged-colon');
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    for (const bad of ['HEAD:../../etc/passwd', 'HEAD foo']) {
+      const res = await fetch(`${baseUrl}/api/merged?repo=${repo.id}&base=${encodeURIComponent(bad)}`);
+      assert.equal(res.status, 400, `expected 400 for base=${JSON.stringify(bad)}`);
+      const body = await res.json();
+      assert.match(body.error, /must not contain whitespace, control characters, or ':'/);
+    }
+  });
+
+  test('is behind the same cross-origin guard as every other /api/ route', async () => {
+    const repoPath = await trackedTempRepo('merged-xorigin');
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const res = await fetch(`${baseUrl}/api/merged?repo=${repo.id}&base=HEAD`, {
+      headers: { 'Sec-Fetch-Site': 'cross-site' },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  test('returns 404 for an unknown repo id', async () => {
+    const res = await fetch(`${baseUrl}/api/merged?repo=no-such-id&base=HEAD`);
+    assert.equal(res.status, 404);
   });
 });
 
