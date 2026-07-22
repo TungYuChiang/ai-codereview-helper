@@ -77,7 +77,16 @@ export function renderTree() {
 // addendum: the file level must be visually distinguishable from function
 // and change-point levels by typeface/weight, not just indent depth.
 function buildFileLabel(path) {
-  const label = createEl('span', { className: 'tree-label' });
+  // tree-path-label is the modifier that turns on shrink-the-directory,
+  // never-shrink-the-filename -- the same split .tree-fn-label already does
+  // for `SelectList.prototype.` + `listAll`. Deliberately not folded into
+  // .tree-label itself: a label holding one plain text node needs the
+  // ordinary overflow/ellipsis path, which a flex container does not give it.
+  const label = createEl('span', { className: 'tree-label tree-path-label' });
+  // The directory half is now elidable, so the full path has to stay
+  // reachable somewhere. buildFunctionLabel titles itself with the un-elided
+  // name for exactly this reason.
+  label.title = path;
   const slash = path.lastIndexOf('/');
   if (slash === -1) {
     label.appendChild(createEl('span', { className: 'tree-name', text: path }));

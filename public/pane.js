@@ -506,7 +506,8 @@ function renderFilePaneHeader(file) {
 // owns it; both call sites want the exact same rendering, but neither
 // module needs the other's internals for anything else.
 function buildFileLabel(path) {
-  const label = createEl('span', { className: 'tree-label' });
+  const label = createEl('span', { className: 'tree-label tree-path-label' });
+  label.title = path;
   const slash = path.lastIndexOf('/');
   if (slash === -1) {
     label.appendChild(createEl('span', { className: 'tree-name', text: path }));

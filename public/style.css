@@ -2428,3 +2428,45 @@ body.sbs-dragging {
 }
 
 /* END ui-scrollbars                                                          */
+
+/* ------------------------------------------------------------------------ */
+/* BEGIN ui-path-elide -- long file paths elide from the directory side.     */
+/*                                                                          */
+/* buildFileLabel (tree.js and pane.js both) has always split a path into    */
+/* .tree-dir + .tree-name, but neither span carried a single rule, so the    */
+/* ellipsis came from .tree-label's overflow on the whole string and landed  */
+/* at the END -- eating the filename, the one part that identifies the row.  */
+/* Two files under src/com/ragic/s3/ai/rmodel/serverAction/ rendered as the  */
+/* same truncated prefix and were indistinguishable in the sidebar.          */
+/*                                                                          */
+/* Same mechanism .tree-fn-label uses for `SelectList.prototype.` + `listAll` */
+/* (see .tree-fn-prefix / .tree-fn-tail above): flex row, the shared prefix  */
+/* is the only half allowed to shrink, the identifying tail never does.      */
+/* ------------------------------------------------------------------------ */
+
+.tree-path-label {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+
+/* Elidable half. min-width: 0 is required -- a flex item's automatic minimum
+ * size is its content, so without it the span refuses to shrink below the
+ * full directory string and the ellipsis never appears. */
+.tree-path-label .tree-dir {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The filename. flex-shrink: 0 is the whole point of this block: it is what
+ * makes the directory give up its space first, and what guarantees the
+ * filename is still legible in a narrow sidebar. */
+.tree-path-label .tree-name {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* END ui-path-elide                                                        */
