@@ -666,8 +666,9 @@ function ensureOrphansRootEl() {
 // -- Scoping ---------------------------------------------------------------
 // This section is an appendix to the right pane, and the right pane shows
 // exactly one file (see pane.js's openFile). Rendering every orphan in the
-// repo underneath it put selector.js's history at the bottom of system.css's
-// page -- the section looked like it belonged to the open file and did not.
+// repo underneath it put one file's history at the bottom of a different
+// file's page -- the section looked like it belonged to the open file and
+// did not.
 // So the visible set is the open file's orphans, and openFile() re-renders on
 // every switch; this used to be called once only, from tree.js's build.
 //

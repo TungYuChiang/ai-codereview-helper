@@ -2436,8 +2436,9 @@ body.sbs-dragging {
 /* .tree-dir + .tree-name, but neither span carried a single rule, so the    */
 /* ellipsis came from .tree-label's overflow on the whole string and landed  */
 /* at the END -- eating the filename, the one part that identifies the row.  */
-/* Two files under src/com/ragic/s3/ai/rmodel/serverAction/ rendered as the  */
-/* same truncated prefix and were indistinguishable in the sidebar.          */
+/* Two files sharing one deep package directory rendered as the same        */
+/* truncated prefix and were indistinguishable in the sidebar. The deeper   */
+/* the tree the worse it gets, so Java sources hit it hardest.              */
 /*                                                                          */
 /* Same mechanism .tree-fn-label uses for `SelectList.prototype.` + `listAll` */
 /* (see .tree-fn-prefix / .tree-fn-tail above): flex row, the shared prefix  */
