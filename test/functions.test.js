@@ -302,14 +302,22 @@ describe('getFunctionRanges — recognized extensions', () => {
     });
   }
 
-  test('returns [] for .java files', () => {
+  // .java / .jsp 現在由 java.js 處理（細節見 test/java.test.js）；這裡只確認
+  // router 有把它們接出去，而不是像從前一樣一律回 []。
+  test('routes .java files to the Java implementation', () => {
     const result = getFunctionRanges('Foo.java', 'class Foo { void bar() {} }');
-    assert.deepEqual(result, []);
+    assert.deepEqual(result, [{ name: 'Foo.bar', startLine: 1, endLine: 1 }]);
   });
 
-  test('returns [] for .jsp files', () => {
-    const result = getFunctionRanges('page.jsp', '<%@ page language="java" %>');
-    assert.deepEqual(result, []);
+  test('routes .jsp files to the JSP implementation', () => {
+    const content = '<%@ page language="java" %>\n<%! void bar() {} %>\n';
+    assert.deepEqual(getFunctionRanges('page.jsp', content), [
+      { name: 'bar', startLine: 2, endLine: 2 },
+    ]);
+  });
+
+  test('still returns [] for other non-JS extensions', () => {
+    assert.deepEqual(getFunctionRanges('a.py', 'def f():\n  pass\n'), []);
   });
 });
 

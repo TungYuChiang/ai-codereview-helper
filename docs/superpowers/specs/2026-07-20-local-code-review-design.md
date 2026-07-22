@@ -62,12 +62,55 @@ UI 上要有一句提示，不要讓使用者以為是 bug。
 ## 非 JS 語言
 
 `functions.js` 的合約：**吃檔名 + 內容，吐 `[{name, startLine, endLine}]`，不認識的副檔名吐 `[]`**。
+`functions.js` 本身是 **router**：依副檔名分派給各語言的實作，自己只保留 JS（acorn）那條路。
 
-非 JS 檔（`.css`、`.java`、`.jsp`…）自動降級成兩層：檔案 → hunk。
-`model.js` 本來就要處理「不在任何 function 內的改動掛檔案層」，非 JS 檔全部走那條既有路徑，
+仍不認識的副檔名（`.css`、`.py`、`.xml`…）自動降級成兩層：檔案 → hunk。
+`model.js` 本來就要處理「不在任何 function 內的改動掛檔案層」，這些檔全部走那條既有路徑，
 **零額外程式碼**。
 
-日後要支援 Java，就是新增一個實作同合約的模組，其他模組一行不改。
+已支援的語言：
+
+| 副檔名 | 實作 | 單位 |
+|---|---|---|
+| `.js` `.mjs` `.cjs` `.jsx` | `functions.js`（acorn） | 最外層具名單位 |
+| `.java` | `java.js`（手寫 lexer） | method 與 constructor |
+| `.jsp` `.jspf` `.tag` | `java.js`（手寫 lexer） | `<%! %>` 宣告區塊裡的 method |
+
+### 新增語言的成本（實測修正）
+
+原本寫的是「新增一個實作同合約的模組，其他模組一行不改」。**加 Java 時實測，這句話要修正**：
+
+- `model.js`、`git.js`、`state.js`、`server.js`、`public/` —— 確實**一行不改**。
+  `model.js` 只吃 `[{name, startLine, endLine}]`，不在乎範圍從哪來；
+  `public/state.js` 的 `buildFunctionLabel` 以最後一個 `.` 切前綴/尾巴，
+  `Outer.Inner.doThing` 直接沿用 `SelectList.prototype.listAll` 的呈現方式。
+- 但 `functions.js` **一定要改**——它是分派點，本來就沒有別的地方可以掛。
+  正確說法是：**「新增一個模組 + `functions.js` 一行分派，其餘模組不動」**。
+- 另外，`test/functions.test.js` 裡兩條「`.java` / `.jsp` 回 `[]`」的斷言必須改寫。
+  那是舊行為的規格，不是意外破壞。
+
+### Java / JSP 的粒度
+
+- **單位是 method 與 constructor，不是 class。** 「最外層具名單位」照字面套到 Java
+  會得到 class，也就是整個檔案，正好落回下面否決過的「只用檔案當粒度」。
+- **名字帶上外層 class 鏈**：`Outer.Inner.doThing`。巢狀 / 內部類別的 method 是各自獨立的單位。
+- **匿名類別、lambda、enum 常數的 body、method 內的 local class 都不另外切**，
+  歸屬外層 method——對應 JS 版「內部 callback closure 不另外切」。
+- **field、import、static / instance initializer、class 層 javadoc 與 annotation**
+  落到檔案層的桶。initializer block 沒有名字，硬給一個（`Outer.static`）等於發明資訊；
+  一個 class 通常也只有一兩個，落檔案層的代價很小。
+- **JSP 只切 `<%! %>` 宣告區塊裡的 method。** scriptlet `<% %>`、expression、directive、
+  EL、taglib、純 HTML 一律落檔案層——scriptlet 不是具名單位，替它掰名字比沒有名字更糟。
+
+### Fail closed
+
+`java.js` **永不 throw**。大括號不平衡、字串沒收尾、遇到沒預期的構造 —— 一律回 `[]`，
+讓該檔降級回「檔案 → hunk」。**錯的範圍比沒有範圍糟糕得多**：它會把改動靜默掛到別的
+method 上，而整個進度追蹤設計的前提就是變更點被正確識別。
+
+已知且刻意不處理（`java.js` 檔頭有完整列表）：Java 規範要求 `\uXXXX` 在 lex 之前先展開，
+本模組不做這層；record 的 compact constructor（無參數列）不視為單位。兩者都是 fail closed
+或漏切，不會產生錯的範圍。
 
 ## 進度失效規則
 
@@ -226,8 +269,9 @@ git diff <base>...<target>   ← ref 由 UI 決定
 - **進度只存行號** — amend 後靜默錯位，勾會跑到別的 function 上
 - **launchd / pm2 常駐** — 手動起就夠，不值得多一個安裝步驟
 - **匯出寫檔** — 剪貼簿就夠，寫檔還要管路徑與清理
-- **現在就支援 Java function 分層** — tree-sitter 要編譯 native binding，違反零傳遞相依；
-  純 JS 的 Java parser 品質參差。等真的需要再說。
+- ~~**現在就支援 Java function 分層** — tree-sitter 要編譯 native binding，違反零傳遞相依；
+  純 JS 的 Java parser 品質參差。等真的需要再說。~~
+  **2026-07-22 解除**（原文保留，理由本身沒有錯，見下方 amendment）。
 
 ## 實作順序建議
 
@@ -239,3 +283,52 @@ git diff <base>...<target>   ← ref 由 UI 決定
 6. `export.js` 兩種格式
 7. multi-repo 設定與 ref picker
 8. jarvis skill
+
+---
+
+## Amendment 2026-07-22：Java / JSP function 分層
+
+> 草案。修改「非 JS 語言」一節與「明確否決過的方案」裡的 Java 條目。
+
+### 為什麼原本否決，以及什麼變了
+
+原本的理由是：
+
+> tree-sitter 要編譯 native binding，違反零傳遞相依；純 JS 的 Java parser 品質參差。
+> 等真的需要再說。
+
+**這段推理沒有錯，而且限制也沒有放寬**——本專案至今仍只有 `acorn` 與 `prismjs`
+兩個零傳遞相依的套件，tree-sitter 依然不能用，npm 上的純 JS Java parser 依然不敢信。
+原文因此保留在否決清單裡，不刪除。
+
+變的是兩件事：
+
+1. **當時預設了「支援 Java＝引入一個 Java parser」。** 這個前提是錯的。
+   我們不需要 parse Java，只需要知道**每個 method body 從第幾行到第幾行**。
+   那不需要型別系統、不需要泛型推導、不需要 AST，只需要一個
+   **能正確處理註解、字串、char literal 與 text block 的 tokenizer**，再在
+   token 流上數大括號。手寫 lexer 約 400 行、**零相依**，正面滿足原本的約束，
+   而不是繞過它。
+2. **「等真的需要再說」的條件已經到了。** 使用者的公司程式碼以 Java 與 JSP 為主，
+   一個 1000 行的 Java 檔目前塌成幾個大 hunk，勾一個等於沒勾——這正是規格自己
+   在否決清單裡寫的「只用檔案當粒度：一個檔 1000 行，勾了等於沒勾」。
+   不做 Java 分層，這個工具對它主要的使用情境是失效的。
+
+### 這不是被否決過的「regex + 大括號計數」
+
+否決清單裡還有一條：
+
+> **Regex + 大括號計數算邊界** — 不加相依，但 regex literal、字串裡的 `{`、
+> 巢狀 closure 都可能算錯，而且會靜默漏行。review 工具最不該犯這種錯。
+
+**這條依然成立，而且正是這次實作要避開的東西。** tokenizer 與 regex 是兩件事：
+regex 是在字元流上比對形狀，字串與註解的內容會直接污染大括號深度；tokenizer 是
+**先把註解丟掉、把每個字面值收斂成單一 token**，之後數大括號時深度由建構保證精確
+——字串裡的 `{` 在 token 流裡根本不存在。
+
+再加上 fail-closed：任何算不出來的情況一律回 `[]`，退回今天的行為。
+否決那條的核心顧慮是「靜默算錯」，這裡用「算不出來就承認算不出來」正面回應。
+
+### 決定摘要
+
+見上方「非 JS 語言」一節（單位、命名、fail closed、新增語言的實際成本）。

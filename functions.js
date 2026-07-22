@@ -1,10 +1,24 @@
-// functions.js — 用 acorn 找出檔案裡每個「最外層具名單位」的起訖行。
+// functions.js — 找出檔案裡每個「具名單位」的起訖行。
+//
+// 這個模組是 **router**：依副檔名把工作分派給各語言的實作，自己只留 JS
+// （acorn）那條路徑。新增語言＝新增一個實作同合約的模組 + 這裡一行分派，
+// 不要把語言細節寫進來。
 //
 // 純函式：吃字串吐結構，不碰檔案系統、不執行子行程。
 
 import { parse } from 'acorn';
 
-const RECOGNIZED_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.jsx']);
+import { getJavaFunctionRanges, getJspFunctionRanges } from './java.js';
+
+const JS_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.jsx']);
+
+/** 副檔名 → 該語言的實作。合約與 getFunctionRanges 相同：吐範圍、不 throw。 */
+const HANDLERS_BY_EXTENSION = new Map([
+  ['.java', getJavaFunctionRanges],
+  ['.jsp', getJspFunctionRanges],
+  ['.jspf', getJspFunctionRanges],
+  ['.tag', getJspFunctionRanges],
+]);
 
 /**
  * @param {string} filePath 用來判斷副檔名
@@ -12,7 +26,14 @@ const RECOGNIZED_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.jsx']);
  * @returns {{ name: string, startLine: number, endLine: number }[]}
  */
 export function getFunctionRanges(filePath, content) {
-  if (!hasRecognizedExtension(filePath)) {
+  const ext = extensionOf(filePath);
+
+  const handler = HANDLERS_BY_EXTENSION.get(ext);
+  if (handler !== undefined) {
+    return handler(content);
+  }
+
+  if (!JS_EXTENSIONS.has(ext)) {
     return [];
   }
 
@@ -27,13 +48,13 @@ export function getFunctionRanges(filePath, content) {
   return ranges;
 }
 
-function hasRecognizedExtension(filePath) {
+/** 回傳含點的小寫副檔名；沒有副檔名回空字串。 */
+function extensionOf(filePath) {
   const dot = filePath.lastIndexOf('.');
   if (dot === -1) {
-    return false;
+    return '';
   }
-  const ext = filePath.slice(dot).toLowerCase();
-  return RECOGNIZED_EXTENSIONS.has(ext);
+  return filePath.slice(dot).toLowerCase();
 }
 
 function parseSource(content) {
