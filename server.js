@@ -692,11 +692,61 @@ async function routeApi(req, res, url, pathname) {
       stats: annotated.stats,
       sources: contentByPath,
     };
+    // Optional narrowing to a single comment, so one annotation can be copied
+    // on its own in exactly the format the whole-review export produces.
+    // Filtering the ctx rather than teaching export.js about single entries is
+    // what keeps one formatter -- toClaudePrompt cannot tell "a review with
+    // one comment" from "one comment out of a review".
+    const key = url.searchParams.get("key");
+    if (key !== null) narrowCtxToOneComment(ctx, key, url.searchParams.get("anchor"));
+
     const text = format === 'claude' ? exportModule.toClaudePrompt(ctx) : exportModule.toMarkdown(ctx);
     return sendJson(res, 200, { text });
   }
 
   throw new HttpError(404, `not found: ${method} ${pathname}`);
+}
+
+// Narrows an export ctx in place to exactly one comment. Throws HttpError so a
+// stale key -- the change point was edited away between render and click --
+// surfaces as a 404 rather than an export that silently contains everything.
+function narrowCtxToOneComment(ctx, key, anchorParam) {
+  if (!/^[0-9a-f]{1,64}$/.test(key)) {
+    throw new HttpError(400, "key must be a hex change-point key");
+  }
+  let anchor = null;
+  if (anchorParam) {
+    const m = /^(\d{1,6})-(\d{1,6})$/.exec(anchorParam);
+    if (!m) throw new HttpError(400, "anchor must look like <start>-<end>");
+    anchor = { start: Number(m[1]), end: Number(m[2]) };
+    if (anchor.start > anchor.end) throw new HttpError(400, "anchor start must not exceed end");
+  }
+
+  for (const file of ctx.files) {
+    for (const group of file.groups) {
+      for (const changePoint of group.changePoints) {
+        if (changePoint.id !== key) continue;
+        const narrowed = { ...changePoint };
+        if (anchor) {
+          const hit = (changePoint.anchoredComments ?? []).find(
+            (a) => a.anchorStart === anchor.start && a.anchorEnd === anchor.end,
+          );
+          if (!hit) throw new HttpError(404, "no anchored comment at that range");
+          narrowed.comment = null;
+          narrowed.anchoredComments = [hit];
+        } else {
+          if (!changePoint.comment) throw new HttpError(404, "that change point has no comment");
+          narrowed.anchoredComments = [];
+        }
+        ctx.files = [{ ...file, groups: [{ ...group, changePoints: [narrowed] }] }];
+        // Copying one entry is not a place to also hand over the review's
+        // history -- the caller asked for this comment.
+        ctx.orphans = [];
+        return;
+      }
+    }
+  }
+  throw new HttpError(404, "no such change point in this diff");
 }
 
 // ---------------------------------------------------------------------------

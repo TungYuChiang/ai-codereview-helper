@@ -904,6 +904,85 @@ describe('/api/orphan/discard', () => {
 });
 
 describe('/api/export', () => {
+  // Narrowing to one comment (the per-comment Copy button). Each test builds a
+  // change point carrying BOTH a whole-change-point comment and an anchored
+  // one, because the failure that matters is not "does it return something"
+  // but "does it return only what was asked for" -- an export that quietly
+  // included the other annotation would still look fine on its own.
+  async function repoWithBothComments(name) {
+    const repoPath = await trackedTempRepo(name);
+    await writeFile(join(repoPath, 'foo.js'), 'function foo() {\n  return 1;\n}\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'add foo']);
+    const base = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+    await writeFile(join(repoPath, 'foo.js'), 'function foo() {\n  return 2;\n}\n');
+    await git(repoPath, ['add', 'foo.js']);
+    await git(repoPath, ['commit', '-q', '-m', 'change foo']);
+    const target = (await git(repoPath, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    const repo = await registerRepo(baseUrl, repoPath);
+    const diff = await (
+      await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${base}&target=${target}`)
+    ).json();
+    const changePoint = diff.files[0].groups[0].changePoints[0];
+    const key = changePoint.id;
+    // setComment requires a context snapshot -- it is what a comment falls
+    // back to once its change point stops existing (see state.js's orphans).
+    const context = {
+      filePath: changePoint.filePath,
+      functionName: changePoint.functionName,
+      diffText: changePoint.diffText,
+    };
+
+    // Asserted, not fired and forgotten: a silently-rejected POST would make
+    // the export legitimately 404 and the failure would point at the wrong
+    // code.
+    const post = async (payload) => {
+      const r = await fetch(`${baseUrl}/api/comment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo: repo.id, key, context, ...payload }),
+      });
+      assert.equal(r.status, 200, `comment POST failed: ${JSON.stringify(await r.json())}`);
+    };
+    await post({ text: 'WHOLE-POINT-MARKER' });
+    await post({ text: 'ANCHORED-MARKER', anchor: { start: 0, end: 0 } });
+    return { repo, base, target, key };
+  }
+
+  const exportUrl = (b, { repo, base, target }, extra) =>
+    `${b}/api/export?repo=${repo.id}&base=${base}&target=${target}&format=claude${extra}`;
+
+  test('key alone narrows to the whole-change-point comment and excludes the anchored one', async () => {
+    const ctx = await repoWithBothComments('export-one-plain');
+    const res = await fetch(exportUrl(baseUrl, ctx, `&key=${ctx.key}`));
+    assert.equal(res.status, 200);
+    const { text } = await res.json();
+    assert.ok(text.includes('WHOLE-POINT-MARKER'), 'expected the unanchored comment');
+    assert.ok(!text.includes('ANCHORED-MARKER'), 'anchored comment must not leak in');
+  });
+
+  test('key plus anchor narrows to that anchored comment and excludes the other', async () => {
+    const ctx = await repoWithBothComments('export-one-anchored');
+    const res = await fetch(exportUrl(baseUrl, ctx, `&key=${ctx.key}&anchor=0-0`));
+    assert.equal(res.status, 200);
+    const { text } = await res.json();
+    assert.ok(text.includes('ANCHORED-MARKER'), 'expected the anchored comment');
+    assert.ok(!text.includes('WHOLE-POINT-MARKER'), 'unanchored comment must not leak in');
+  });
+
+  test('rejects a non-hex key instead of scanning for it', async () => {
+    const ctx = await repoWithBothComments('export-one-badkey');
+    const res = await fetch(exportUrl(baseUrl, ctx, '&key=--output%3D%2Ftmp%2Fx'));
+    assert.equal(res.status, 400);
+  });
+
+  test('404s on an anchor range that has no comment', async () => {
+    const ctx = await repoWithBothComments('export-one-noanchor');
+    const res = await fetch(exportUrl(baseUrl, ctx, `&key=${ctx.key}&anchor=99-99`));
+    assert.equal(res.status, 404);
+  });
+
   test('claude format returns a text prompt', async () => {
     const repoPath = await trackedTempRepo('export-claude');
     await writeFile(join(repoPath, 'foo.js'), 'function foo() {\n  return 1;\n}\n');

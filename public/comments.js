@@ -16,6 +16,7 @@
 
 import { appState, dom, createEl, mainPaneEl } from './state.js';
 import { api, clearError, showError } from './api.js';
+import { copyToClipboardWithFeedback } from './export.js';
 import { buildUnifiedDiff, getPrismLanguage, registerAnchorUi, renderChangePointContent } from './diff.js';
 import { isAnnotationExpanded, setAnnotationExpanded, forgetAnnotationExpanded,
   ORPHAN_CARD_KIND, ORPHAN_SECTION_KIND, ORPHAN_SECTION_KEY } from './prefs.js';
@@ -208,6 +209,35 @@ function summarizeAnnotation(text) {
 // header + hidden detail (text + Edit/Delete). `kind` is 'comment' | 'note'
 // and is what scopes the persisted state, so a change point's comment and
 // note collapse independently.
+// Copies ONE comment in the same format the whole-review Claude export uses.
+//
+// Deliberately not the comment's raw text: that is already selectable on
+// screen, so a button for it would add nothing. What a lone comment lacks is
+// everything that makes it answerable -- which file, which function, which
+// lines. The server narrows the export ctx to this single entry and runs the
+// same formatter, so there is no second rendering of an annotation to keep in
+// step with the first.
+function buildCopyButton(key, anchor) {
+  const btn = createEl('button', { className: 'comment-btn', text: 'Copy' });
+  btn.type = 'button';
+  btn.title = '複製這一則（給 Claude，含所在檔案與程式碼）';
+  btn.addEventListener('click', () => copyOneComment(btn, key, anchor));
+  return btn;
+}
+
+async function copyOneComment(btnEl, key, anchor) {
+  if (!appState.repo || !appState.base || !appState.target) return;
+  clearError();
+  let text;
+  try {
+    text = await api.exportOneComment(appState.repo, appState.base, appState.target, key, anchor);
+  } catch (err) {
+    showError(err.message);
+    return;
+  }
+  await copyToClipboardWithFeedback(text, btnEl);
+}
+
 function buildAnnotationBody({ kind, key, bodyClassName, labelClassName, labelText, textClassName, text, onEdit, onDelete }) {
   const body = createEl('div', { className: bodyClassName });
   const detailId = `annotation-detail-${kind}-${(annotationDetailSeq += 1)}`;
@@ -233,6 +263,10 @@ function buildAnnotationBody({ kind, key, bodyClassName, labelClassName, labelTe
   deleteBtn.type = 'button';
   deleteBtn.addEventListener('click', onDelete);
   actions.append(editBtn, deleteBtn);
+  // Comments only. A note means "I understood this, recording it for myself"
+  // and is deliberately absent from the Claude export (see export.js), so a
+  // button offering to copy one in that format would be offering nothing.
+  if (kind === 'comment') actions.appendChild(buildCopyButton(key, null));
   detail.appendChild(actions);
 
   wireCollapse({
@@ -782,6 +816,9 @@ function buildAnchoredView(entry, anchored) {
     saveAnchoredComment(entry, { start: anchored.anchorStart, end: anchored.anchorEnd }, ''),
   );
   actions.append(editBtn, deleteBtn);
+  actions.appendChild(
+    buildCopyButton(entry.changePoint.id, `${anchored.anchorStart}-${anchored.anchorEnd}`),
+  );
   block.appendChild(actions);
   return block;
 }

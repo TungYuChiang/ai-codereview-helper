@@ -93,6 +93,15 @@ export const api = {
     apiFetch(
       `/api/export?repo=${encodeURIComponent(repoId)}&base=${encodeURIComponent(base)}&target=${encodeURIComponent(target)}&format=${encodeURIComponent(format)}`,
     ).then((b) => b.text),
+
+  // One comment, same formatter. Always 'claude': this is the button that
+  // hands a single annotation to Claude, and the Markdown form is a
+  // whole-review note rather than one entry.
+  exportOneComment: (repoId, base, target, key, anchor) =>
+    apiFetch(
+      `/api/export?repo=${encodeURIComponent(repoId)}&base=${encodeURIComponent(base)}&target=${encodeURIComponent(target)}&format=claude&key=${encodeURIComponent(key)}` +
+        (anchor ? `&anchor=${encodeURIComponent(anchor)}` : ''),
+    ).then((b) => b.text),
 };
 
 // ===========================================================================

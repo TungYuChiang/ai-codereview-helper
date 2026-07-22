@@ -57,7 +57,7 @@ async function handleExportClick(format, btnEl) {
   await copyToClipboardWithFeedback(text, btnEl);
 }
 
-async function copyToClipboardWithFeedback(text, btnEl) {
+export async function copyToClipboardWithFeedback(text, btnEl) {
   const originalText = btnEl.textContent;
   try {
     if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
