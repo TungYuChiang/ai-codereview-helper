@@ -14,6 +14,7 @@ export const LS_KEYS = {
   target: 'lcr.target',
   viewMode: 'lcr.viewMode',
   currentFile: 'lcr.currentFile',
+  currentKey: 'lcr.currentKey',
 };
 
 export function restoreSavedSelection() {
@@ -41,6 +42,18 @@ export function setOrRemove(key, value) {
 // to a different lifecycle (restored/validated against the *current*
 // diff's file list in tree.js's renderTree, not blindly reapplied like
 // base/target are against refs in load.js).
+export function persistCurrentKey() {
+  setOrRemove(LS_KEYS.currentKey, appState.currentKey);
+}
+
+// Read straight out of storage rather than off appState. By the time the tree
+// has been rebuilt, openFile() has already moved appState.currentKey to the
+// newly-opened file's first change point, so the value that actually survived
+// the reload is only still reachable here.
+export function savedCurrentKey() {
+  return localStorage.getItem(LS_KEYS.currentKey) || null;
+}
+
 export function persistCurrentFile() {
   setOrRemove(LS_KEYS.currentFile, appState.currentFile);
 }

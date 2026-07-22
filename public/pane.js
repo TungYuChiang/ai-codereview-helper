@@ -258,7 +258,7 @@ function renderChangePointPane(entry, neighborMap) {
   if (entry.gapAbove) {
     const size = entry.gapAbove.bottom - entry.gapAbove.top + 1;
     if (size <= EXPAND_AUTO_THRESHOLD) {
-      runGapExpand(entry, entry.gapAbove, 'top', size);
+      autoExpands.push(runGapExpand(entry, entry.gapAbove, 'top', size));
     }
   }
 }
@@ -291,7 +291,7 @@ function renderChangePointPane(entry, neighborMap) {
 // highlight/scroll. This is what tree.js's row click, moveSelection (j/k,
 // below), and jumpToNextUnread (u, keyboard.js) all call instead of
 // nav.js's selectChangePoint directly.
-export function openChangePoint(key, { scroll = false } = {}) {
+export function openChangePoint(key, { scroll = false, instant = false } = {}) {
   if (!key) return;
   const entry = dom.changePoints.get(key);
   if (!entry) return;
@@ -328,7 +328,7 @@ export function openChangePoint(key, { scroll = false } = {}) {
     return;
   }
 
-  selectChangePoint(key, { scroll });
+  selectChangePoint(key, { scroll, instant });
 }
 
 // j/k: walks appState.order (already in tree/scroll order, across every
@@ -415,7 +415,20 @@ export function openFile(path) {
 // the new one. Never called directly for the "no file" case -- see
 // openFile's own null branch above, which this function assumes has
 // already been ruled out by its caller.
+// Auto-expands started by the current file's render. Each is a fetch, and
+// each inserts real height ABOVE the change points below it when it lands, so
+// anything that needs a stable layout -- restoring a reading position, in
+// practice -- has to wait for them rather than guess with a timer. Reset per
+// file render; never awaited for their values, only for "the pane has stopped
+// growing".
+let autoExpands = [];
+
+export function autoExpandsSettled() {
+  return Promise.allSettled(autoExpands);
+}
+
 function renderFilePane(path) {
+  autoExpands = [];
   // The previously displayed file's right-pane DOM is about to be
   // discarded below (changepointsRootEl.textContent = ''), so any
   // in-progress comment edit is over too -- same as a full tree rebuild

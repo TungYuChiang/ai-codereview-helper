@@ -4,6 +4,7 @@
 
 import { appState, dom, mainPaneEl, statsBadgeEl } from './state.js';
 import { api, clearError, showError } from './api.js';
+import { persistCurrentKey } from './prefs.js';
 
 // ===========================================================================
 // Checking a change point -- POST /api/check, then update the tree in place.
@@ -125,9 +126,31 @@ export function updateStatsDom() {
 // callback still arrives a frame or two later), with margin for observer
 // delivery latency.
 const SPY_SUPPRESS_MS = 400;
+
+// "Where I was reading" is defined by the user moving, not by the layout
+// settling. Until this page has seen a real input gesture, the scroll spy is
+// not allowed to change the selection at all.
+//
+// This replaced a narrower guard that was only active during a restore, and
+// the way that one failed is the reason for the broader rule. A restore is
+// only as durable as its scroll: if the scroll does not land -- auto-expands
+// still arriving, a background tab, anything -- the spy comes back the moment
+// the guard lifts, sees the pane sitting at the top, selects the first change
+// point and persists it. The saved position is then gone, so the next reload
+// cannot restore either, which is exactly the "every single refresh" symptom
+// reported. Keying on input instead means a reload nobody has touched can
+// never move the saved position, however badly the restore goes.
+let userInteracted = false;
+export function hasUserInteracted() {
+  return userInteracted;
+}
+for (const type of ['wheel', 'keydown', 'pointerdown', 'touchstart']) {
+  document.addEventListener(type, () => { userInteracted = true; }, { capture: true, passive: true });
+}
 let spySuppressedUntil = 0;
 
-export function selectChangePoint(key, { scroll = false, _fromSpy = false } = {}) {
+export function selectChangePoint(key, { scroll = false, _fromSpy = false, instant = false } = {}) {
+  if (_fromSpy && !userInteracted) return;
   if (!key || !dom.changePoints.has(key)) return;
   if (appState.currentKey === key && !scroll) return;
 
@@ -143,6 +166,10 @@ export function selectChangePoint(key, { scroll = false, _fromSpy = false } = {}
 
   const prevKey = appState.currentKey;
   appState.currentKey = key;
+  // Persisted here rather than at the call sites because this is the single
+  // place currentKey changes -- scroll-spy, j/k, u and tree clicks all land
+  // on it, so "where I was reading" is captured no matter how I got there.
+  persistCurrentKey();
   if (prevKey && prevKey !== key) setHighlight(prevKey, false);
   setHighlight(key, true);
 
@@ -155,7 +182,12 @@ export function selectChangePoint(key, { scroll = false, _fromSpy = false } = {}
     // spot agrees with the scroll-spy's own "current = centred" rule below
     // -- see that block comment for why mismatched alignment would fight
     // the very selection this scroll is making.
-    const behavior = prefersReducedMotion() ? 'auto' : 'smooth';
+    // Smooth scrolling exists so j/k movement reads as direction. A restore
+    // has no direction to read: you were not anywhere a moment ago, and
+    // animating three thousand pixels on load is just a slow arrival that
+    // anything else touching the pane can interrupt half way through.
+    // Callers resuming a position ask for instant.
+    const behavior = instant || prefersReducedMotion() ? 'auto' : 'smooth';
     entry.rightContainer.scrollIntoView({ block: 'center', behavior });
   }
 }

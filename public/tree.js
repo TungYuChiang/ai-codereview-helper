@@ -14,8 +14,14 @@ import {
   changepointsRootEl,
   filePaneHeaderEl,
 } from './state.js';
-import { renderChangePointTreeRow, openFile } from './pane.js';
-import { updateStatsDom } from './nav.js';
+import {
+  renderChangePointTreeRow,
+  openFile,
+  openChangePoint,
+  autoExpandsSettled,
+} from './pane.js';
+import { savedCurrentKey } from './prefs.js';
+import { updateStatsDom, hasUserInteracted } from './nav.js';
 import { renderOrphans } from './comments.js';
 
 // ===========================================================================
@@ -60,6 +66,12 @@ export function renderTree() {
   // revalidates base/target against the new refs -- otherwise fall back to
   // the first file in tree order. A diff with zero files (e.g.
   // base === target) opens none at all.
+  // Read BEFORE openFile(). openFile lands on the newly-opened file's first
+  // change point, which goes through selectChangePoint and therefore
+  // persistCurrentKey -- overwriting the very value being restored. Reading it
+  // afterwards returns "the first change point" every time, which is exactly
+  // the behaviour this is meant to replace.
+  const resumeKey = savedCurrentKey();
   const filePaths = appState.tree.files.map((f) => f.path);
   const nextFile = appState.currentFile && filePaths.includes(appState.currentFile)
     ? appState.currentFile
@@ -70,6 +82,69 @@ export function renderTree() {
   // openFile's own "already open, skip" guard must not apply here.
   appState.currentFile = null;
   openFile(nextFile);
+  restoreReadingPosition(resumeKey);
+}
+
+// Scrolls back to whatever change point was current when the page was last
+// alive, so a reload resumes where reading stopped instead of at the top of
+// the file. The spec's whole premise is that a review gets interrupted and
+// picked up later ("中斷後能接著看"); restoring the file but not the position
+// left you hunting for your place on every refresh.
+//
+// The saved key is a content hash, so it only still matches when that exact
+// change point survived the diff being recomputed (see state.js's
+// changePointKey). If the code moved on, or the key belongs to some other
+// file, openFile's own landing spot -- the file's first change point --
+// simply stands. No staleness check of its own is needed: a key that no
+// longer identifies anything cannot be found in dom.changePoints.
+// Two animation frames -- the first lets style/layout settle after a render,
+// the second runs once that layout has actually been performed -- but racing a
+// timer, because requestAnimationFrame does not fire at all in a background
+// tab. Without the race the promise chain below never settles there, and the
+// .finally that re-enables position tracking never runs: restoring in a tab
+// you had not looked at yet would silently stop the position being saved for
+// the rest of the session.
+function afterTwoFrames(timeoutMs = 250) {
+  return new Promise((resolve) => {
+    const done = () => resolve();
+    requestAnimationFrame(() => requestAnimationFrame(done));
+    setTimeout(done, timeoutMs);
+  });
+}
+
+function restoreReadingPosition(key) {
+  if (!key) return;
+  const entry = dom.changePoints.get(key);
+  if (!entry || entry.file.path !== appState.currentFile) return;
+
+  // Select immediately so the tree highlight is right from the first frame,
+  // but defer the scroll: the right pane's rows exist without having been laid
+  // out yet, and scrolling into a geometry that is still moving lands nowhere
+  // useful -- measured, it left the pane at the top of the file with the
+  // correct row highlighted, which is the worst of both.
+  openChangePoint(key, { scroll: false });
+
+  // Wait for this file's auto-expands before scrolling, rather than a fixed
+  // two frames. Two frames was enough for layout to settle but not for the
+  // fetches those small gaps kick off: each lands later and inserts height
+  // ABOVE this change point, so a scroll timed before them aims at a geometry
+  // that is still moving. On a file with dozens of change points that is most
+  // of them, which is why the position kept coming back wrong.
+  autoExpandsSettled()
+    .then(() => afterTwoFrames())
+    .then(() => {
+      // Re-read rather than closing over the entry: a repo/ref switch can land
+      // another render in between, and scrolling to a row from the previous
+      // tree would yank the user somewhere arbitrary.
+      // Abandoned if the reader already started moving on their own -- being
+      // yanked somewhere else a second after you began reading is worse than
+      // landing at the top.
+      if (hasUserInteracted()) return;
+      const still = dom.changePoints.get(key);
+      if (still && appState.currentKey === key) {
+        openChangePoint(key, { scroll: true, instant: true });
+      }
+    });
 }
 
 // Splits a file path into "dir/" (muted) + "name" (foreground) so a single
