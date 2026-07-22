@@ -88,6 +88,14 @@
        app.js calls Prism.highlight() itself per diff line (see EXTENSION
        POINT 1 in app.js). -->
   <script src="vendor/prism.js" data-manual></script>
+  <!-- Java grammar, kept as its own file rather than concatenated into
+       vendor/prism.js. That bundle is prismjs's own prism.js verbatim (core +
+       markup + css + clike + javascript); appending to it would mean anyone
+       re-vendoring a newer Prism silently drops Java again. Must load after
+       the bundle -- prism-java extends the clike grammar defined there.
+       Copied from node_modules/prismjs/components/prism-java.js; prismjs is
+       already a direct dependency, so this adds none. -->
+  <script src="vendor/prism-java.js" data-manual></script>
   <script type="module" src="app.js"></script>
   <!-- Diagnostic recorder. Loads only when the URL carries ?diag=1, so it is
        inert in normal use. Added to investigate a freeze that could not be

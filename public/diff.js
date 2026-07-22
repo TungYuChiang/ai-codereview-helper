@@ -60,6 +60,13 @@ const EXT_TO_PRISM_LANG = {
   htm: 'markup',
   xml: 'markup',
   svg: 'markup',
+  // Grammar comes from its own <script> in index.html, not the vendored
+  // bundle, which ships only markup/css/clike/javascript. Both halves are
+  // needed and each is inert alone: without the grammar this entry names a
+  // language Prism does not have and getPrismLanguage's own guard returns
+  // null; without this entry the grammar loads but nothing ever asks for it.
+  // Java rendered as plain text until both were in place.
+  java: 'java',
 };
 
 // Resolves a Prism language name for a file path, or null if the extension
