@@ -30,6 +30,15 @@ export const basePickerEl = document.getElementById('base-picker');
 export const targetPickerEl = document.getElementById('target-picker');
 export const workingTreeHintEl = document.getElementById('working-tree-hint');
 
+// Per-commit review: a third picker listing the commits the branch adds
+// (base..target), plus an explicit way back to the whole-branch view and the
+// note explaining why tick progress is counted separately in that mode. See
+// the commit-picker section in topbar.js.
+export const commitGroupEl = document.getElementById('commit-group');
+export const commitPickerEl = document.getElementById('commit-picker');
+export const commitBackBtnEl = document.getElementById('commit-back-btn');
+export const commitHintEl = document.getElementById('commit-hint');
+
 export const viewUnifiedBtnEl = document.getElementById('view-unified-btn');
 export const viewSideBySideBtnEl = document.getElementById('view-sidebyside-btn');
 
@@ -61,8 +70,33 @@ export const bodyEl = document.getElementById('body');
 export const appState = {
   repos: [],           // [{id, path, name}]
   repo: null,           // currently selected repo id
-  base: null,           // currently selected base ref
+  base: null,           // currently selected base ref -- the BRANCH range's base
   target: null,         // currently selected target ref, or 'WORKING_TREE'
+
+  // Per-commit review. base/target above keep meaning exactly what they always
+  // did -- whatever the two top-bar ref pickers hold -- and are what the commit
+  // LIST is computed from (base..target). This is the narrowing on top of it:
+  //
+  //   null           -- whole-branch view, i.e. the original behaviour.
+  //   {sha, base, …} -- one commit from GET /api/commits; the diff shown is
+  //                     that commit's own `base...sha`.
+  //
+  // Kept as a separate field rather than by overwriting base/target with the
+  // commit's range, because overwriting would destroy the very range the
+  // commit list is derived from (and would make the ref pickers display two
+  // shas instead of the branch the user picked). Everything that actually
+  // talks to /api/diff, /api/lines and /api/export reads effectiveRange()
+  // below instead, so there is exactly one place that knows about the
+  // narrowing -- nothing downstream of it (model.js, the backend state.js, the
+  // whole tree renderer) can tell a commit was involved at all.
+  commit: null,
+  // A sha restored from localStorage that has NOT yet been checked against a
+  // real commit list. Held separately so `commit` is only ever a record that
+  // genuinely exists in the current range -- after a rebase the persisted sha
+  // is simply gone, and that has to degrade to the whole-branch view rather
+  // than to a diff against a revision git no longer has. Cleared by
+  // loadCommitsForRange in load.js, which is the only thing that resolves it.
+  pendingCommit: null,
   viewMode: 'unified',  // 'unified' | 'side-by-side' -- diff-rendering unit reads this
   codeTheme: 'default', // one of CODE_THEMES below -- mirrors the <html data-code-theme>
                          // attribute (the actual source of truth for rendering; nothing
@@ -159,6 +193,30 @@ export const dom = {
                                 // `let` in pane.js) for the same reason scrollObserver does --
                                 // nav.js needs to read/write it too.
 };
+
+// ===========================================================================
+// The revision range every diff-shaped API call actually uses.
+//
+// Whole-branch view: the two ref pickers, unchanged.
+// Single-commit view: that commit's first parent (or git's empty tree, for a
+// root commit -- see EMPTY_TREE_SHA in the backend git.js) and the commit
+// itself. `git diff <parent>...<sha>` is byte-identical to
+// `git diff <parent> <sha>`, because merge-base(parent, sha) IS parent, so
+// this needs no new diff machinery on either side: it is an ordinary
+// base/target pair that happens to span one commit.
+//
+// Callers: loadDiff (/api/diff), runGapExpand (/api/lines -- context
+// expansion must read the revision the diff is expressed in), and both export
+// paths (/api/export). NOT /api/merged or /api/commits, which are questions
+// about the branch range and are answered from appState.base/target directly.
+// ===========================================================================
+
+export function effectiveRange() {
+  if (appState.commit) {
+    return { base: appState.commit.base, target: appState.commit.sha };
+  }
+  return { base: appState.base, target: appState.target };
+}
 
 // ===========================================================================
 // Small DOM helper -- the only place that sets text content, always via

@@ -40,9 +40,26 @@
         <div id="target-picker" class="ref-picker"></div>
       </div>
 
+      <!-- Per-commit review. Mount point only; the picker is the same
+           type-to-filter combobox the ref pickers use (combobox.js), built and
+           filled by topbar.js. Hidden whenever the range has no commits to
+           offer (a Working Tree target, or a branch with nothing ahead of
+           base) -- see updateCommitPickerVisibility in topbar.js. -->
+      <div class="topbar-group" id="commit-group" hidden>
+        <span class="ref-sep">&rsaquo;</span>
+        <div id="commit-picker" class="ref-picker"></div>
+        <button id="commit-back-btn" type="button" class="commit-back-btn" hidden
+          title="回到整條 branch 的完整 diff">&larr; 整條 branch</button>
+      </div>
+
       <span id="working-tree-hint" class="hint" hidden>
         Working Tree: diff 會隨你編輯而變、勾會失效，這是正常行為
       </span>
+
+      <!-- Same slot and same treatment as the Working Tree hint above, for the
+           same kind of fact: a consequence of the mode you are in that would
+           otherwise read as a bug. Text is set by topbar.js. -->
+      <span id="commit-hint" class="hint" hidden></span>
 
       <div class="topbar-group view-toggle" role="group" aria-label="view mode">
         <button id="view-unified-btn" type="button" class="view-btn">unified</button>

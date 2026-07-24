@@ -42,6 +42,15 @@ export const api = {
     apiFetch(
       `/api/merged?repo=${encodeURIComponent(repoId)}&base=${encodeURIComponent(base)}`,
     ).then((b) => b.merged),
+  // The commits `target` adds on top of `base` (two-dot `base..target`), for
+  // the commit picker. Its own call rather than part of getDiff because it is
+  // a question about the BRANCH range, while the diff being displayed may be a
+  // single commit's range -- see the /api/commits route comment in server.js.
+  // Each entry carries the `base` to hand straight back to getDiff.
+  getCommits: (repoId, base, target) =>
+    apiFetch(
+      `/api/commits?repo=${encodeURIComponent(repoId)}&base=${encodeURIComponent(base)}&target=${encodeURIComponent(target)}`,
+    ).then((b) => b.commits),
   getDiff: (repoId, base, target) =>
     apiFetch(
       `/api/diff?repo=${encodeURIComponent(repoId)}&base=${encodeURIComponent(base)}&target=${encodeURIComponent(target)}`,

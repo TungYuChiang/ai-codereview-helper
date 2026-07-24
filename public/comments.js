@@ -14,7 +14,7 @@
 // persistence (state.js's comments/notes maps, same changePointKey), and a
 // change point can have both, either, or neither at once.
 
-import { appState, dom, createEl, mainPaneEl } from './state.js';
+import { appState, dom, createEl, mainPaneEl, effectiveRange } from './state.js';
 import { api, clearError, showError } from './api.js';
 import { copyToClipboardWithFeedback } from './export.js';
 import { buildUnifiedDiff, getPrismLanguage, registerAnchorUi, renderChangePointContent } from './diff.js';
@@ -226,11 +226,15 @@ function buildCopyButton(key, anchor) {
 }
 
 async function copyOneComment(btnEl, key, anchor) {
-  if (!appState.repo || !appState.base || !appState.target) return;
+  // effectiveRange for the same reason handleExportClick uses it: the change
+  // point named by `key` exists in the range currently on screen, and looking
+  // it up in a different one is how a stale-key 404 happens.
+  const { base, target } = effectiveRange();
+  if (!appState.repo || !base || !target) return;
   clearError();
   let text;
   try {
-    text = await api.exportOneComment(appState.repo, appState.base, appState.target, key, anchor);
+    text = await api.exportOneComment(appState.repo, base, target, key, anchor);
   } catch (err) {
     showError(err.message);
     return;

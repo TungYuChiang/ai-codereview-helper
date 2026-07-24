@@ -14,6 +14,7 @@
 
 import { appState, createEl, repoSelectEl, addRepoToggleEl, addRepoFormEl, addRepoInputEl,
   addRepoCancelEl, addRepoErrorEl, basePickerEl, targetPickerEl, workingTreeHintEl,
+  commitGroupEl, commitPickerEl, commitBackBtnEl, commitHintEl,
   viewUnifiedBtnEl, viewSideBySideBtnEl, codeThemeSelectEl, dom } from './state.js';
 import { createCombobox } from './combobox.js';
 import { saveSelection } from './prefs.js';
@@ -292,6 +293,165 @@ export function pickDefaultBase(branches) {
 
 export function updateWorkingTreeHint() {
   workingTreeHintEl.hidden = appState.target !== 'WORKING_TREE';
+}
+
+// ===========================================================================
+// Top bar: commit picker -- "review one commit at a time".
+//
+// The top bar's `base … target` produces one squashed diff for the whole
+// branch, in which a line touched by two different commits appears once, as
+// its net effect. This picker narrows that to a single commit without
+// introducing a second kind of diff: selecting a commit just points the same
+// /api/diff at `<its first parent>...<it>` (see effectiveRange in state.js).
+//
+// Reuses combobox.js rather than being a new widget -- see the block comment
+// there for why (it is the keyboard/ARIA/isEditing machinery that is hard,
+// and this needs all of it). Deviations from the ref pickers, all argued:
+//
+//   - The first entry is the way BACK ("整條 branch"), pinned above the
+//     commits exactly the way Working Tree is pinned above the refs in the
+//     target picker. It is not the only way back -- there is also an explicit
+//     button next to the picker -- because "the escape hatch is an item
+//     inside the thing you are trying to escape" is a poor sole affordance.
+//   - Merge commits are LISTED and badged, not hidden. A merge can carry real
+//     conflict-resolution work, and a list that silently disagrees with
+//     `git log` is worse than one that explains itself. The badge says what
+//     the diff will actually be (`<sha>^` is the FIRST parent, so a merge
+//     shows what it brought in from the other side -- which overlaps the
+//     individual commits also listed, and the user should know that).
+//   - A root commit is badged too: its diff is against git's empty tree, i.e.
+//     the whole file contents as additions, because it has no parent.
+//
+// Every string here reaches the DOM through combobox.js's createEl, i.e.
+// textContent. Commit subjects and author names come from the repo and can
+// contain anything, including HTML-looking text.
+// ===========================================================================
+
+export const commitCombo = createCombobox({
+  id: 'commit-select',
+  label: 'commit',
+  placeholder: '整條 branch',
+  emptyText: '沒有符合的 commit',
+  // Wider than the ref pickers' 160px: a row's committed label is
+  // "<shortSha> <subject>", and 160px shows barely more than the sha.
+  maxWidth: 300,
+});
+commitPickerEl.appendChild(commitCombo.rootEl);
+
+// The sentinel for "no commit selected". Not `null`: the combobox's value is
+// what the input displays, and the whole-branch state has to be a real,
+// selectable row so it can be committed with Enter like any other.
+export const WHOLE_BRANCH = 'WHOLE_BRANCH';
+
+const WHOLE_BRANCH_ITEM = {
+  value: WHOLE_BRANCH,
+  label: '整條 branch',
+  meta: '全部 commit 合成一份 diff',
+  title: '整條 branch — base...target 的完整 diff',
+};
+
+// The last commit list handed to us, so a selection can be resolved back to
+// its full record (which carries the `base` the diff needs) by sha alone.
+let currentCommits = [];
+
+// A one-shot explanation shown in place of the per-commit hint. Currently only
+// used for "the commit you had selected is gone", which is the rebase case.
+let commitNotice = '';
+
+// Kept to one short line, the same length as the Working Tree hint beside it:
+// the top bar is at its width budget and a paragraph here wraps it onto a
+// third row. The full reasoning is on the title, one hover away.
+const COMMIT_VIEW_HINT = '單一 commit：勾選進度和整條 branch 分開算，切回去就回來了';
+const COMMIT_VIEW_HINT_TITLE =
+  '變更點的識別碼是 diff 內容的雜湊。同一段程式碼在單一 commit 裡的 diff 文字，'
+  + '和整條 branch 合起來看時不一樣（只要那幾行被改過不只一次），所以兩邊的勾是分開的。'
+  + '這是正確行為，不是進度不見了 —— 切回整條 branch，原本的進度就在。';
+
+function commitItem(commit) {
+  const when = formatRelativeDate(commit.date);
+  const badge = commit.isMerge
+    ? 'merge · diff 只比第一個 parent'
+    : (commit.isRoot ? '第一個 commit · 整份檔案都是新增' : '');
+  return {
+    value: commit.sha,
+    label: `${commit.shortSha} ${commit.subject}`,
+    meta: when ? `${commit.author} · ${when}` : commit.author,
+    badge,
+    // Findable by author too, without the author crowding the visible label.
+    search: `${commit.shortSha} ${commit.subject} ${commit.author}`,
+    title: `${commit.shortSha}  ${commit.subject}\n${commit.author} · ${commit.date}`,
+  };
+}
+
+export function buildCommitItems(commits) {
+  const items = [WHOLE_BRANCH_ITEM];
+  if (commits.length === 0) return items;
+  items.push({ separator: true, label: `這條 branch 的 ${commits.length} 個 commit` });
+  for (const commit of commits) items.push(commitItem(commit));
+  return items;
+}
+
+/** Called once per branch-range change, with GET /api/commits's response. */
+export function setCommits(commits) {
+  currentCommits = commits;
+  commitCombo.setItems(buildCommitItems(commits));
+  updateCommitPickerVisibility();
+}
+
+/** Resolves a sha back to the full record, or null if it is not in the list. */
+export function findCommit(sha) {
+  return currentCommits.find((c) => c.sha === sha) ?? null;
+}
+
+/**
+ * Applies a commit selection (or `null` for the whole branch) to appState and
+ * the top bar. Deliberately does NOT reload the diff -- load.js owns the
+ * pipeline, the same one-way dependency the ref comboboxes already follow.
+ */
+export function setCommitSelection(commit) {
+  appState.commit = commit;
+  commitCombo.setValue(commit ? commit.sha : WHOLE_BRANCH);
+  commitCombo.inputEl.title = commit
+    ? `${commit.shortSha} ${commit.subject}`
+    : '整條 branch';
+  commitBackBtnEl.hidden = commit === null;
+  updateCommitHint();
+}
+
+export function setCommitNotice(text) {
+  commitNotice = text;
+  updateCommitHint();
+}
+
+// The progress note. Change-point keys are content hashes of
+// (filePath, functionName, diffText, ordinal) -- see changePointKey in the
+// backend state.js -- so a change point in a single commit's diff and "the
+// same" change in the squashed branch diff are only the same key when the
+// diff TEXT is identical, which stops being true the moment a line is touched
+// by more than one commit. That is correct behaviour, but a user sitting on
+// 66/67 who switches views and sees unread items will read it as lost
+// progress, so it is stated up front. Same slot, same styling and same
+// purpose as the Working Tree hint next to it: naming a consequence of the
+// current mode before it looks like a bug.
+function updateCommitHint() {
+  if (appState.commit) {
+    commitHintEl.textContent = COMMIT_VIEW_HINT;
+    commitHintEl.title = COMMIT_VIEW_HINT_TITLE;
+    commitHintEl.hidden = false;
+    return;
+  }
+  commitHintEl.textContent = commitNotice;
+  commitHintEl.title = commitNotice;
+  commitHintEl.hidden = commitNotice === '';
+}
+
+// The picker is hidden when it has nothing to offer beyond the entry that
+// means "what you are already looking at": a WORKING_TREE target (which is not
+// a commit, so there is no list) or a branch with nothing ahead of base. The
+// top bar is already at its width budget -- see the combobox width note in
+// style.css -- so a control that can only be a no-op does not earn a slot.
+function updateCommitPickerVisibility() {
+  commitGroupEl.hidden = currentCommits.length === 0;
 }
 
 // ===========================================================================

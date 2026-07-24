@@ -14,7 +14,7 @@
 // instead: one coherent responsibility ("how a change point's body renders,
 // including pulling in more of the file around it"), no cycle.
 
-import { appState, createEl, mainPaneEl } from './state.js';
+import { appState, createEl, mainPaneEl, effectiveRange } from './state.js';
 import { api } from './api.js';
 
 // ===========================================================================
@@ -1161,9 +1161,10 @@ function applyGapResult(gap, direction, data) {
 // loading, success, error) -- the same "no refetch, no scroll reset"
 // discipline as onToggleCheck/saveComment elsewhere in this app, just
 // scoped to a single change point's content instead of the tree. ref is
-// read live from appState.target (the diff's target -- see api.getLines'
-// own comment for why base would be wrong) rather than frozen at
-// gap-creation time, same as every other API call. A gap only survives
+// read live from effectiveRange().target -- the DISPLAYED diff's target: a
+// ref name, 'WORKING_TREE', or a commit sha in single-commit view (see
+// api.getLines' own comment for why base would be wrong) -- rather than
+// frozen at gap-creation time, same as every other API call. A gap only survives
 // until the next tree rebuild anyway (renderTree in tree.js clears
 // dom.changePoints).
 //
@@ -1188,7 +1189,7 @@ export async function runGapExpand(entry, gap, direction, wanted = EXPAND_REQUES
 
   try {
     const { requestStart, requestEnd } = computeGapRange(gap, direction, wanted);
-    const data = await api.getLines(appState.repo, appState.target, gap.filePath, requestStart, requestEnd);
+    const data = await api.getLines(appState.repo, effectiveRange().target, gap.filePath, requestStart, requestEnd);
     applyGapResult(gap, direction, data);
   } catch (err) {
     gap.error = err.message;

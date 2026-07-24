@@ -12,6 +12,7 @@ export const LS_KEYS = {
   repo: 'lcr.repo',
   base: 'lcr.base',
   target: 'lcr.target',
+  commit: 'lcr.commit',
   viewMode: 'lcr.viewMode',
   currentFile: 'lcr.currentFile',
   currentKey: 'lcr.currentKey',
@@ -23,12 +24,27 @@ export function restoreSavedSelection() {
   appState.target = localStorage.getItem(LS_KEYS.target) || null;
   appState.viewMode = localStorage.getItem(LS_KEYS.viewMode) || 'unified';
   appState.currentFile = localStorage.getItem(LS_KEYS.currentFile) || null;
+  // Restored as PENDING, not as the selection itself: a sha out of
+  // localStorage is a claim about a range we have not fetched yet, and after a
+  // rebase it names a commit that is no longer on the branch. It becomes
+  // appState.commit only once loadCommitsForRange finds it in a real list.
+  appState.commit = null;
+  appState.pendingCommit = localStorage.getItem(LS_KEYS.commit) || null;
 }
 
 export function saveSelection() {
   setOrRemove(LS_KEYS.repo, appState.repo);
   setOrRemove(LS_KEYS.base, appState.base);
   setOrRemove(LS_KEYS.target, appState.target);
+  // Falls back to the still-unresolved pending sha on purpose. saveSelection
+  // runs several times during startup -- including from setViewMode() and
+  // from loadRefsForRepo() before the commit list has been fetched -- and
+  // without this the persisted commit would be erased on every reload by the
+  // very code path that is supposed to restore it.
+  setOrRemove(
+    LS_KEYS.commit,
+    appState.commit ? appState.commit.sha : appState.pendingCommit,
+  );
   localStorage.setItem(LS_KEYS.viewMode, appState.viewMode);
 }
 

@@ -186,9 +186,122 @@ function splitLines(output) {
     .filter((line) => line.length > 0);
 }
 
+// ---------------------------------------------------------------------------
+// listCommits — the commits on `target` that are not on `base`.
+//
+// TWO-dot (`base..target`), deliberately, and it is a different question from
+// the one the diff asks. `base...target` (three-dot) is the symmetric
+// difference and is what "show me this branch's changes" means; `base..target`
+// is "the commits reachable from target but not from base", i.e. exactly the
+// list of commits this branch added. Using three-dot here would additionally
+// list base's own divergent commits, which are not on this branch at all.
+//
+// Per-commit `base`: the commit's FIRST parent, resolved to a sha rather than
+// left as the literal `<sha>^`. The two are the same revision by definition,
+// but a resolved sha is one less thing that has to survive URL-encoding and
+// ref validation on the way back in, and it lets the root-commit case (below)
+// be answered here, once, instead of by every caller.
+//
+// Ordering is git log's default: reverse chronological, newest first — the
+// same direction the ref pickers already sort in.
+//
+// Security notes, in the same layered spirit as the rest of this file:
+//   - `base`/`target` are joined into a single `base..target` argv element,
+//     and `--end-of-options` sits before it, so neither half can be read as an
+//     option. Unlike `for-each-ref`, `git log` fails LOUDLY ("fatal: bad
+//     revision") if `--end-of-options` is placed before `--format=...`, so the
+//     silent-format-fallback trap that bit listMergedBranches cannot recur
+//     here unnoticed — but the placement rule is the same: after the options.
+//   - The trailing `--` keeps a revision from ever spilling into the pathspec
+//     position.
+// ---------------------------------------------------------------------------
+
+// git's canonical empty tree object. It is what `git hash-object -t tree
+// /dev/null` produces in every repository, so it needs no lookup and exists
+// implicitly everywhere.
+//
+// It stands in as the "parent" of a ROOT commit, which genuinely has none:
+// `<root>^` is not a revision and fails with "unknown revision", which would
+// surface to the user as a raw git error on an otherwise ordinary click. The
+// empty tree is git's own answer for "compare against nothing" (it is what
+// `git diff --root` shows for a root commit), so the diff a user sees is the
+// root commit's entire contents as additions — which is exactly what that
+// commit introduced.
+export const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
+// Record/field separators. ASCII US (0x1f) and RS (0x1e), emitted by git's own
+// `%x..` format escapes, so they are produced by git rather than smuggled
+// through argv (a literal NUL could not be: execve truncates argv strings at
+// the first NUL byte, the same constraint that shaped FIELD_SEPARATOR above).
+//
+// The subject is placed LAST and reassembled by joining everything after the
+// fixed fields, so even a subject that somehow contained a 0x1f would not
+// shift the other fields — it would only reappear inside the subject.
+const COMMIT_FIELD_SEP = '\x1f';
+const COMMIT_RECORD_SEP = '\x1e';
+const COMMIT_FORMAT =
+  ['%H', '%h', '%P', '%an', '%cI', '%s'].join('%x1f') + '%x1e';
+
+/**
+ * 列出 target 上、base 沒有的 commit（`base..target`），由新到舊。
+ * @param {string} repoPath
+ * @param {string} base
+ * @param {string} target
+ * @returns {Promise<{
+ *   sha: string, shortSha: string, subject: string, author: string,
+ *   date: string, base: string, isMerge: boolean, isRoot: boolean,
+ * }[]>}
+ */
+export async function listCommits(repoPath, base, target) {
+  const out = await runGit(repoPath, [
+    'log',
+    `--format=${COMMIT_FORMAT}`,
+    END_OF_OPTIONS,
+    `${base}..${target}`,
+    PATHSPEC_SEPARATOR,
+  ]);
+  return parseCommitRecords(out);
+}
+
+function parseCommitRecords(output) {
+  const commits = [];
+  for (const record of output.split(COMMIT_RECORD_SEP)) {
+    // Each record is followed by a newline from git's own line-per-commit
+    // output; the last one is just trailing whitespace.
+    const trimmed = record.replace(/^\r?\n/, '');
+    if (trimmed.trim().length === 0) continue;
+
+    const fields = trimmed.split(COMMIT_FIELD_SEP);
+    if (fields.length < 6) continue;
+
+    const [sha, shortSha, parents, author, date] = fields;
+    const subject = fields.slice(5).join(COMMIT_FIELD_SEP);
+    const parentShas = parents.trim().length > 0 ? parents.trim().split(' ') : [];
+
+    commits.push({
+      sha,
+      shortSha,
+      subject,
+      author,
+      date,
+      // First parent. For a MERGE commit that means the diff a caller builds
+      // from this is the merge's first-parent diff — everything the merge
+      // brought in from the other side. Merges are listed rather than hidden
+      // (a merge can carry real conflict-resolution work, and a list that
+      // silently disagrees with `git log` is worse than one that explains
+      // itself), and `isMerge` is what lets the UI say so.
+      base: parentShas.length > 0 ? parentShas[0] : EMPTY_TREE_SHA,
+      isMerge: parentShas.length > 1,
+      isRoot: parentShas.length === 0,
+    });
+  }
+  return commits;
+}
+
 /**
  * 取得原始 diff 文字。
  * target 為 null 或 'WORKING_TREE' -> git diff <base>
+ * base 為 EMPTY_TREE_SHA            -> git diff <empty tree> <target>（two-dot）
  * 否則                              -> git diff <base>...<target>（three-dot）
  * @param {string} repoPath
  * @param {string} base
@@ -196,9 +309,24 @@ function splitLines(output) {
  * @returns {Promise<string>}
  */
 export async function getDiff(repoPath, base, target) {
-  const revision =
-    target === null || target === 'WORKING_TREE' ? base : `${base}...${target}`;
-  return runGit(repoPath, ['diff', END_OF_OPTIONS, revision, PATHSPEC_SEPARATOR]);
+  if (target === null || target === 'WORKING_TREE') {
+    return runGit(repoPath, ['diff', END_OF_OPTIONS, base, PATHSPEC_SEPARATOR]);
+  }
+
+  // `A...B` is a *symmetric difference*, which git only defines between two
+  // COMMITS. The empty tree is a tree object, so `4b825dc...B` dies with
+  // "error: object 4b825dc... is a tree, not a commit / fatal: Invalid
+  // symmetric difference expression" (verified against a real repo). Two-dot
+  // is the form that works, and against the empty tree it means the same
+  // thing three-dot would if it were legal: there is no merge base, and
+  // everything in B is new. This branch is not reachable for any base that
+  // previously worked -- a tree can never be the left side of `...` -- so it
+  // adds a case rather than changing one.
+  if (base === EMPTY_TREE_SHA) {
+    return runGit(repoPath, ['diff', END_OF_OPTIONS, base, target, PATHSPEC_SEPARATOR]);
+  }
+
+  return runGit(repoPath, ['diff', END_OF_OPTIONS, `${base}...${target}`, PATHSPEC_SEPARATOR]);
 }
 
 /**

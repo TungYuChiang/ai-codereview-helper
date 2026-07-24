@@ -4,14 +4,16 @@
 // topbar.js's header comment for why those particular listeners live here
 // instead of alongside the rest of the top bar).
 
-import { appState, repoSelectEl, addRepoFormEl,
-  addRepoInputEl, addRepoErrorEl, treeRootEl, changepointsRootEl, filePaneHeaderEl } from './state.js';
+import { appState, repoSelectEl, addRepoFormEl, addRepoInputEl, addRepoErrorEl,
+  treeRootEl, changepointsRootEl, filePaneHeaderEl, commitBackBtnEl,
+  effectiveRange } from './state.js';
 import { api, clearError, showError } from './api.js';
 import { saveSelection, annotationStateId, pruneAnnotationExpanded,
   ORPHAN_CARD_KIND, ORPHAN_SECTION_KIND, ORPHAN_SECTION_KEY } from './prefs.js';
 import { populateRepoSelect, updateRepoSelectTitle, dedupeRepos, populateBaseTargetSelects,
   pickDefaultBase, updateRefSelectTitles, updateWorkingTreeHint, setMergedBranches,
-  baseCombo, targetCombo } from './topbar.js';
+  baseCombo, targetCombo, commitCombo, setCommits, findCommit, setCommitSelection,
+  setCommitNotice, WHOLE_BRANCH } from './topbar.js';
 import { renderTree } from './tree.js';
 
 // ===========================================================================
@@ -69,7 +71,59 @@ export async function loadRefsForRepo() {
   // has already opened the picker. One cheap git call.
   await loadMergedForBase();
 
+  // Also before the diff, and for a stronger reason than the marks: this is
+  // what decides WHICH diff to load. A commit restored from localStorage is
+  // only honoured once it has been found in the real list.
+  await loadCommitsForRange();
+
   await loadDiff();
+}
+
+/**
+ * Refreshes the commit picker for the current branch range and revalidates
+ * whatever commit selection we are carrying against it.
+ *
+ * Called on load and on every base/target change, because the list is
+ * `base..target` and so is meaningless the moment either end moves -- the same
+ * relationship loadMergedForBase has to the base.
+ *
+ * Silent on failure, for the same reason loadMergedForBase is: the
+ * whole-branch view is fully functional without a commit list, so a failed
+ * /api/commits must not raise the error banner over a diff that loaded fine.
+ * Falling back to an empty list also falls back to the whole-branch view,
+ * which is the one selection that is always valid.
+ */
+export async function loadCommitsForRange() {
+  setCommitNotice('');
+
+  const noCommits =
+    !appState.repo || !appState.base || !appState.target || appState.target === 'WORKING_TREE';
+
+  let commits = [];
+  if (!noCommits) {
+    try {
+      commits = await api.getCommits(appState.repo, appState.base, appState.target);
+    } catch {
+      commits = [];
+    }
+  }
+  setCommits(commits);
+
+  // The selection to try to keep: a sha restored from localStorage, or the one
+  // already selected before base/target moved. Either way it is only a wish
+  // until it is found in the list that actually exists now.
+  const wanted = appState.pendingCommit || (appState.commit ? appState.commit.sha : null);
+  appState.pendingCommit = null;
+
+  const found = wanted ? findCommit(wanted) : null;
+  if (wanted && !found) {
+    // The rebase case, and the "you moved the base/target" case. Falling back
+    // silently would look like the tool forgot; saying so, in the same slot as
+    // the other mode hints, makes it a fact rather than a glitch.
+    setCommitNotice('先前選的 commit 已不在這個範圍，已切回整條 branch');
+  }
+  setCommitSelection(found);
+  saveSelection();
 }
 
 /**
@@ -97,12 +151,16 @@ export async function loadMergedForBase() {
 }
 
 export async function loadDiff() {
-  if (!appState.repo || !appState.base || !appState.target) return;
+  // effectiveRange, not appState.base/target: in single-commit view the range
+  // is that commit's own `<first parent>...<sha>`. Nothing below this line
+  // knows or cares which of the two it got -- see state.js's effectiveRange.
+  const { base, target } = effectiveRange();
+  if (!appState.repo || !base || !target) return;
   clearError();
 
   let data;
   try {
-    data = await api.getDiff(appState.repo, appState.base, appState.target);
+    data = await api.getDiff(appState.repo, base, target);
   } catch (err) {
     showError(err.message);
     appState.tree = null;
@@ -198,6 +256,7 @@ baseCombo.onSelect = async (value) => {
   updateRefSelectTitles();
   saveSelection();
   await loadMergedForBase();
+  await loadCommitsForRange();
   await loadDiff();
 };
 
@@ -206,5 +265,26 @@ targetCombo.onSelect = async (value) => {
   updateRefSelectTitles();
   updateWorkingTreeHint();
   saveSelection();
+  await loadCommitsForRange();
   await loadDiff();
 };
+
+// Selecting a commit changes only WHICH range the diff is fetched for -- the
+// branch range in the two ref pickers is untouched, so the commit list itself
+// stays valid and is not refetched. Contrast baseCombo above, where the list
+// the user is choosing from has itself just changed.
+commitCombo.onSelect = async (value) => {
+  setCommitNotice('');
+  setCommitSelection(value === WHOLE_BRANCH ? null : findCommit(value));
+  saveSelection();
+  await loadDiff();
+};
+
+// The second, explicit way back. Same effect as picking 整條 branch in the
+// list -- see the commit-picker comment in topbar.js for why both exist.
+commitBackBtnEl.addEventListener('click', async () => {
+  setCommitNotice('');
+  setCommitSelection(null);
+  saveSelection();
+  await loadDiff();
+});

@@ -8,7 +8,7 @@
 // unavailable) a fallback panel with a select-all-able textarea is shown
 // instead, with the reason.
 
-import { appState, createEl, topbarEl, appEl, bodyEl } from './state.js';
+import { appState, createEl, topbarEl, appEl, bodyEl, effectiveRange } from './state.js';
 import { api, clearError, showError } from './api.js';
 
 // -- Wording ---------------------------------------------------------------
@@ -43,12 +43,17 @@ exportClaudeBtnEl.addEventListener('click', () => handleExportClick('claude', ex
 exportMarkdownBtnEl.addEventListener('click', () => handleExportClick('markdown', exportMarkdownBtnEl));
 
 async function handleExportClick(format, btnEl) {
-  if (!appState.repo || !appState.base || !appState.target) return;
+  // effectiveRange, so exporting while a single commit is selected exports
+  // that commit's review rather than silently re-deriving the whole branch --
+  // the comments being exported were made against the change points of the
+  // range on screen. See state.js's effectiveRange.
+  const { base, target } = effectiveRange();
+  if (!appState.repo || !base || !target) return;
   clearError();
 
   let text;
   try {
-    text = await api.exportReview(appState.repo, appState.base, appState.target, format);
+    text = await api.exportReview(appState.repo, base, target, format);
   } catch (err) {
     showError(err.message);
     return;

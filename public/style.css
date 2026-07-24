@@ -576,6 +576,46 @@ body {
   gap: 6px;
 }
 
+/* `display: flex` above outranks the UA's `[hidden] { display: none }`, so a
+ * hidden topbar group would otherwise still be laid out. The commit-picker
+ * group relies on `hidden` -- see updateCommitPickerVisibility in topbar.js. */
+.topbar-group[hidden] {
+  display: none;
+}
+
+/* The explicit way back from a single commit to the whole-branch diff.
+ * Labelled rather than an icon, and only present while a commit is selected. */
+.commit-back-btn {
+  cursor: pointer;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-panel);
+  color: var(--color-fg-dim);
+  padding: 4px 8px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  white-space: nowrap;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.commit-back-btn:hover {
+  border-color: var(--color-accent);
+  color: var(--color-fg);
+}
+
+.commit-back-btn:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+/* The commit picker's rows carry a subject as well as a sha, so they are
+ * wider than the ref pickers' -- and its meta column (author · date) is
+ * longer too. Scoped to this picker so the ref pickers keep their tight cap. */
+#commit-picker .combobox-list {
+  max-width: 620px;
+}
+
 .ref-sep {
   color: var(--color-fg-faint);
   padding: 0 2px;

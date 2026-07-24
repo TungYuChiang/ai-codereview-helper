@@ -67,15 +67,44 @@ const EDIT_KIND = 'refPicker';
 
 let comboSeq = 0;
 
+// ---------------------------------------------------------------------------
+// Reused, not forked, for the per-commit picker.
+//
+// The commit picker (topbar.js) lists subject + author + date per row and
+// looks less like a "ref name" picker than the two it was built for -- but
+// everything that is HARD here is exactly what it needs: the full ARIA
+// combobox/listbox pattern, activedescendant roving, Enter/Escape semantics,
+// and above all the three-layer guard above that keeps keyboard.js's bare
+// single-key shortcuts from firing while the user types. Writing a second
+// widget would mean re-deriving all three layers and getting one of them
+// wrong. The row model (label + meta + badge + title + separators) already
+// carries three fields per row, and type-to-filter over commit subjects is
+// directly useful on a branch with 20 commits.
+//
+// Three small, default-preserving options exist for it: `emptyText` (the
+// no-match line says "ref" otherwise), `maxWidth` (a commit's shortSha +
+// subject does not fit the 160px cap sized for branch names), and a per-item
+// `search` string (so a commit can be found by author too, without the author
+// having to be part of its visible label).
+// ---------------------------------------------------------------------------
+
 /**
  * @param {object} options
  * @param {string} options.id        id for the input (kept stable; the
  *                                   listbox id is derived from it)
  * @param {string} options.label     accessible name for input + listbox
  * @param {string} [options.placeholder]
+ * @param {string} [options.emptyText] shown when nothing matches the filter
+ * @param {number} [options.maxWidth] widest the input may grow, in px
  * @returns {object} the combobox handle -- see the returned object below
  */
-export function createCombobox({ id, label, placeholder = '' }) {
+export function createCombobox({
+  id,
+  label,
+  placeholder = '',
+  emptyText = '沒有符合的 ref',
+  maxWidth = 160,
+}) {
   const comboId = `${id}-${++comboSeq}`;
   const listId = `${id}-listbox`;
 
@@ -93,6 +122,9 @@ export function createCombobox({ id, label, placeholder = '' }) {
   input.setAttribute('aria-controls', listId);
   input.setAttribute('aria-label', label);
   input.setAttribute('aria-haspopup', 'listbox');
+  // style.css caps .combobox-input at the branch-name width; a caller that
+  // asks for more has to lift that cap as well as set the inline width.
+  input.style.maxWidth = `${maxWidth}px`;
 
   const list = createEl('ul', { className: 'combobox-list' });
   list.id = listId;
@@ -114,7 +146,7 @@ export function createCombobox({ id, label, placeholder = '' }) {
   root.append(input, sizer, list);
 
   // ---- state ----
-  // items: [{ value, label, meta, badge, dimmed } | { separator: true, label }]
+  // items: [{ value, label, meta, badge, dimmed, search } | { separator: true, label }]
   let items = [];
   let visible = [];        // the filtered subset actually rendered
   // The text the list is currently filtered by. NOT simply input.value:
@@ -176,7 +208,11 @@ export function createCombobox({ id, label, placeholder = '' }) {
    */
   function filterItems(query) {
     const q = query.trim().toLowerCase();
-    const matches = (item) => q === '' || item.label.toLowerCase().includes(q);
+    // `search` lets an item be findable by text that is not part of its
+    // visible label (a commit's author, say). Defaults to the label, which is
+    // what the ref pickers have always matched on.
+    const matches = (item) =>
+      q === '' || (item.search ?? item.label).toLowerCase().includes(q);
 
     const out = [];
     let pendingSeparator = null;
@@ -200,7 +236,7 @@ export function createCombobox({ id, label, placeholder = '' }) {
     optionEls = [];
 
     if (visible.length === 0) {
-      const empty = createEl('li', { className: 'combobox-empty', text: '沒有符合的 ref' });
+      const empty = createEl('li', { className: 'combobox-empty', text: emptyText });
       empty.setAttribute('role', 'presentation');
       list.appendChild(empty);
       optionEls.push(null);
@@ -308,7 +344,7 @@ export function createCombobox({ id, label, placeholder = '' }) {
   }
 
   const MIN_INPUT_WIDTH = 56;
-  const MAX_INPUT_WIDTH = 160;
+  const MAX_INPUT_WIDTH = maxWidth;
 
   function syncWidth() {
     if (document.activeElement === input) {

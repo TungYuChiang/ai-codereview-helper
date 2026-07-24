@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { listRefs, listMergedBranches, getDiff, getFileContent, parseDiff } from '../git.js';
+import { listRefs, listMergedBranches, listCommits, getDiff, getFileContent, parseDiff,
+  EMPTY_TREE_SHA } from '../git.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -38,6 +39,32 @@ async function commitOnBranch(repoPath, branchName, isoDate) {
     { cwd: repoPath, env: { ...process.env, GIT_COMMITTER_DATE: isoDate } },
   );
   await git(repoPath, ['checkout', '-q', previous]);
+}
+
+/** A repo with no commits at all, so a genuine ROOT commit can be created. */
+async function makeEmptyTempRepo() {
+  const dir = await mkdtemp(join(tmpdir(), 'local-code-review-git-test-'));
+  await git(dir, ['init', '-q']);
+  await git(dir, ['config', 'user.email', 'test@example.com']);
+  await git(dir, ['config', 'user.name', 'Test']);
+  return dir;
+}
+
+/** Commits the current index with a fixed author name and commit date. */
+async function commitAt(repoPath, message, isoDate, authorName = 'Test', extraArgs = []) {
+  await execFileAsync('git', ['commit', '-q', '-m', message, '--date', isoDate, ...extraArgs], {
+    cwd: repoPath,
+    env: {
+      ...process.env,
+      GIT_COMMITTER_DATE: isoDate,
+      GIT_AUTHOR_NAME: authorName,
+      GIT_AUTHOR_EMAIL: 'author@example.com',
+    },
+  });
+}
+
+async function rev(repoPath, revision) {
+  return (await git(repoPath, ['rev-parse', revision])).stdout.trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +411,202 @@ describe('listMergedBranches', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// listCommits — the commits on `target` that are NOT on `base` (two-dot
+// `base..target`), which is the "what is on this branch" set. Distinct from
+// the three-dot `base...target` the diff uses.
+// ---------------------------------------------------------------------------
+
+describe('listCommits', () => {
+  test('lists base..target newest first with sha, shortSha, subject, author and date', async () => {
+    const repo = await makeTempRepo();
+    try {
+      const trunk = (await git(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+      await git(repo, ['checkout', '-q', '-b', 'feature']);
+
+      await writeFile(join(repo, 'one.txt'), 'one\n');
+      await git(repo, ['add', 'one.txt']);
+      await commitAt(repo, 'older subject', '2024-03-01T00:00:00+00:00', 'Alice Author');
+      const olderSha = await rev(repo, 'HEAD');
+
+      await writeFile(join(repo, 'two.txt'), 'two\n');
+      await git(repo, ['add', 'two.txt']);
+      await commitAt(repo, 'newer subject', '2024-03-02T00:00:00+00:00', 'Bob Builder');
+      const newerSha = await rev(repo, 'HEAD');
+
+      const commits = await listCommits(repo, trunk, 'feature');
+
+      assert.equal(commits.length, 2, 'only the two commits ahead of trunk');
+      // Newest first, matching the ref pickers.
+      assert.deepEqual(commits.map((c) => c.sha), [newerSha, olderSha]);
+      assert.deepEqual(commits.map((c) => c.subject), ['newer subject', 'older subject']);
+      assert.deepEqual(commits.map((c) => c.author), ['Bob Builder', 'Alice Author']);
+
+      assert.equal(commits[0].shortSha, newerSha.slice(0, commits[0].shortSha.length));
+      assert.ok(commits[0].shortSha.length >= 7 && commits[0].shortSha.length < 40);
+      assert.match(commits[0].date, /^2024-03-02T/);
+      assert.equal(commits[0].isMerge, false);
+      // The base to diff this commit against: its first parent.
+      assert.equal(commits[0].base, olderSha);
+      assert.equal(commits[1].base, await rev(repo, trunk));
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('subjects and author names survive verbatim, separators and all', async () => {
+    const repo = await makeTempRepo();
+    try {
+      const trunk = (await git(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+      await git(repo, ['checkout', '-q', '-b', 'feature']);
+      const nasty = '<img src=x onerror=alert(1)> "quoted" \\ 中文 100%';
+      await writeFile(join(repo, 'f.txt'), 'x\n');
+      await git(repo, ['add', 'f.txt']);
+      await commitAt(repo, nasty, '2024-03-01T00:00:00+00:00', 'Ünïcode Näme');
+
+      const commits = await listCommits(repo, trunk, 'feature');
+      assert.equal(commits.length, 1);
+      assert.equal(commits[0].subject, nasty);
+      assert.equal(commits[0].author, 'Ünïcode Näme');
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('a branch with nothing ahead of base is an empty list, not an error', async () => {
+    const repo = await makeTempRepo();
+    try {
+      const trunk = (await git(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+      await git(repo, ['branch', 'nothing-new']);
+      assert.deepEqual(await listCommits(repo, trunk, 'nothing-new'), []);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('a root commit reports the empty tree as its base, not <sha>^', async () => {
+    const repo = await makeEmptyTempRepo();
+    try {
+      // An unrelated root on its own branch, purely so that `unrelated..main`
+      // is a range whose target side contains a genuine root commit.
+      await git(repo, ['checkout', '-q', '-b', 'unrelated']);
+      await git(repo, ['commit', '--allow-empty', '-q', '-m', 'unrelated root']);
+
+      await git(repo, ['checkout', '-q', '--orphan', 'main']);
+      await writeFile(join(repo, 'root.txt'), 'root content\n');
+      await git(repo, ['add', 'root.txt']);
+      await commitAt(repo, 'the root commit', '2024-03-01T00:00:00+00:00');
+      const rootSha = await rev(repo, 'HEAD');
+
+      const commits = await listCommits(repo, 'unrelated', 'main');
+      assert.equal(commits.length, 1);
+      assert.equal(commits[0].sha, rootSha);
+      assert.equal(commits[0].base, EMPTY_TREE_SHA);
+      assert.equal(commits[0].isRoot, true);
+
+      // And the reported base has to actually WORK as a base -- `<root>^` is
+      // "unknown revision", which is the raw git error this must not become.
+      const diff = await getDiff(repo, commits[0].base, commits[0].sha);
+      assert.match(diff, /root\.txt/);
+      assert.match(diff, /^\+root content$/m);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('a merge commit is listed, labelled, and based on its FIRST parent', async () => {
+    const repo = await makeTempRepo();
+    try {
+      const trunk = (await git(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+
+      await git(repo, ['checkout', '-q', '-b', 'side']);
+      await writeFile(join(repo, 'side.txt'), 'side\n');
+      await git(repo, ['add', 'side.txt']);
+      await commitAt(repo, 'on side', '2024-03-01T00:00:00+00:00');
+      const sideSha = await rev(repo, 'HEAD');
+
+      await git(repo, ['checkout', '-q', trunk]);
+      await git(repo, ['checkout', '-q', '-b', 'feature']);
+      await writeFile(join(repo, 'feature.txt'), 'feature\n');
+      await git(repo, ['add', 'feature.txt']);
+      await commitAt(repo, 'on feature', '2024-03-02T00:00:00+00:00');
+      const featureSha = await rev(repo, 'HEAD');
+
+      await execFileAsync(
+        'git',
+        ['merge', '-q', '--no-ff', '-m', 'merge side into feature', 'side'],
+        { cwd: repo, env: { ...process.env, GIT_COMMITTER_DATE: '2024-03-03T00:00:00+00:00' } },
+      );
+      const mergeSha = await rev(repo, 'HEAD');
+
+      const commits = await listCommits(repo, trunk, 'feature');
+      const shas = commits.map((c) => c.sha);
+      assert.ok(shas.includes(mergeSha), 'merge commits are listed, not hidden');
+      assert.ok(shas.includes(sideSha));
+      assert.ok(shas.includes(featureSha));
+
+      const merge = commits.find((c) => c.sha === mergeSha);
+      assert.equal(merge.isMerge, true, 'a merge must be labelled as one');
+      assert.equal(merge.base, featureSha, 'first parent, i.e. <sha>^');
+
+      const ordinary = commits.find((c) => c.sha === sideSha);
+      assert.equal(ordinary.isMerge, false);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('cannot be tricked into treating base or target as a git option', async () => {
+    const repo = await makeTempRepo();
+    const probe = join(tmpdir(), `lcr-git-pwned-commits-${process.pid}-${Date.now()}.txt`);
+    try {
+      // Same reasoning as the getDiff-target test below: `base` and `target`
+      // are joined into one `${base}..${target}` argv element, so what has to
+      // be proved is HOW it fails. With `--end-of-options` present git never
+      // reaches option parsing and says "bad revision"; without it, the
+      // leading `--output=` is read as an option and the message is a
+      // different shape entirely.
+      await assert.rejects(
+        () => listCommits(repo, `--output=${probe}`, 'HEAD'),
+        (err) => {
+          assert.match(err.message, /bad revision/);
+          assert.doesNotMatch(err.message, /unknown option|ambiguous argument/);
+          return true;
+        },
+      );
+      await assert.rejects(
+        () => listCommits(repo, 'HEAD', `--output=${probe}`),
+        (err) => {
+          assert.match(err.message, /bad revision/);
+          return true;
+        },
+      );
+      await assert.rejects(
+        () => import('node:fs/promises').then((fs) => fs.access(probe)),
+        'git executed an injected option and wrote a file',
+      );
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('the readable error message names the git invocation without the guards', async () => {
+    const repo = await makeTempRepo();
+    try {
+      await assert.rejects(
+        () => listCommits(repo, 'no-such-ref', 'also-missing'),
+        (err) => {
+          assert.doesNotMatch(err.message, /--end-of-options/);
+          assert.match(err.message, /^git log .* failed:/);
+          return true;
+        },
+      );
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('getDiff', () => {
   test('diffs base against the working tree when target is null', async () => {
     const repo = await makeTempRepo();
@@ -434,6 +657,52 @@ describe('getDiff', () => {
       // three-dot diff should NOT show file.txt (which only exists on base-branch's
       // divergent history relative to the merge base, not on feature-branch's side)
       assert.doesNotMatch(diff, /file\.txt/);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  // The whole per-commit feature rests on this: selecting a commit is nothing
+  // but base=<its first parent>, target=<it>, with getDiff running unchanged.
+  // `<sha>^...<sha>` is byte-identical to `<sha>^ <sha>` because
+  // merge-base(sha^, sha) IS sha^.
+  test('a single commit is expressible as an ordinary three-dot base...target', async () => {
+    const repo = await makeTempRepo();
+    try {
+      await writeFile(join(repo, 'file.txt'), 'one\n');
+      await git(repo, ['add', 'file.txt']);
+      await git(repo, ['commit', '-q', '-m', 'first']);
+      await writeFile(join(repo, 'file.txt'), 'one\ntwo\n');
+      await git(repo, ['add', 'file.txt']);
+      await git(repo, ['commit', '-q', '-m', 'second']);
+      const sha = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+      const parent = (await git(repo, ['rev-parse', 'HEAD^'])).stdout.trim();
+
+      const viaGetDiff = await getDiff(repo, parent, sha);
+      const twoDot = (await git(repo, ['diff', parent, sha])).stdout;
+      assert.equal(viaGetDiff, twoDot);
+      assert.match(viaGetDiff, /^\+two$/m);
+      assert.doesNotMatch(viaGetDiff, /^\+one$/m);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  // A root commit has no parent, so the empty tree stands in for one. It is a
+  // TREE, not a commit, and `git diff <tree>...<commit>` is "Invalid symmetric
+  // difference expression" -- so this base must take the two-dot path.
+  test('diffs against the empty tree with two-dot, since three-dot needs two commits', async () => {
+    const repo = await makeEmptyTempRepo();
+    try {
+      await writeFile(join(repo, 'root.txt'), 'root content\n');
+      await git(repo, ['add', 'root.txt']);
+      await git(repo, ['commit', '-q', '-m', 'root']);
+      const rootSha = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+
+      const diff = await getDiff(repo, EMPTY_TREE_SHA, rootSha);
+      assert.match(diff, /new file mode/);
+      assert.match(diff, /root\.txt/);
+      assert.match(diff, /^\+root content$/m);
     } finally {
       await rm(repo, { recursive: true, force: true });
     }

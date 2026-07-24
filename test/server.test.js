@@ -501,6 +501,253 @@ describe('/api/diff', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// /api/commits -- the commits on `target` that are not on `base`, so the front
+// end can offer "review one commit at a time" instead of only the whole branch
+// squashed into a single diff.
+// ---------------------------------------------------------------------------
+
+describe('/api/commits', () => {
+  /** Commits the index with a fixed author name and commit date. */
+  async function commitAt(repoPath, message, isoDate, authorName = 'Test') {
+    await execFileAsync('git', ['commit', '-q', '-m', message, '--date', isoDate], {
+      cwd: repoPath,
+      env: {
+        ...process.env,
+        GIT_COMMITTER_DATE: isoDate,
+        GIT_AUTHOR_NAME: authorName,
+        GIT_AUTHOR_EMAIL: 'author@example.com',
+      },
+    });
+  }
+
+  async function rev(repoPath, revision) {
+    return (await git(repoPath, ['rev-parse', revision])).stdout.trim();
+  }
+
+  test('lists the branch commits newest first with the fields the picker needs', async () => {
+    const repoPath = await trackedTempRepo('commits');
+    const trunkName = (await git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+    const trunkSha = await rev(repoPath, 'HEAD');
+    await git(repoPath, ['checkout', '-q', '-b', 'feature']);
+
+    await writeFile(join(repoPath, 'one.txt'), 'one\n');
+    await git(repoPath, ['add', 'one.txt']);
+    await commitAt(repoPath, 'older subject', '2024-03-01T00:00:00+00:00', 'Alice Author');
+    const olderSha = await rev(repoPath, 'HEAD');
+
+    await writeFile(join(repoPath, 'two.txt'), 'two\n');
+    await git(repoPath, ['add', 'two.txt']);
+    await commitAt(repoPath, 'newer subject', '2024-03-02T00:00:00+00:00', 'Bob Builder');
+    const newerSha = await rev(repoPath, 'HEAD');
+
+    const repo = await registerRepo(baseUrl, repoPath);
+    const res = await fetch(
+      `${baseUrl}/api/commits?repo=${repo.id}&base=${encodeURIComponent(trunkName)}&target=feature`,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+
+    assert.deepEqual(body.commits.map((c) => c.sha), [newerSha, olderSha]);
+    assert.deepEqual(body.commits.map((c) => c.subject), ['newer subject', 'older subject']);
+    assert.deepEqual(body.commits.map((c) => c.author), ['Bob Builder', 'Alice Author']);
+    assert.match(body.commits[0].date, /^2024-03-02T/);
+    assert.equal(body.commits[0].base, olderSha);
+    assert.equal(body.commits[1].base, trunkSha);
+    assert.equal(body.commits[0].isMerge, false);
+    assert.ok(body.commits[0].shortSha.length >= 7);
+  });
+
+  test('an empty range is an empty list, not an error', async () => {
+    const repoPath = await trackedTempRepo('commits-empty');
+    const trunkName = (await git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+    await git(repoPath, ['branch', 'nothing-new']);
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const res = await fetch(
+      `${baseUrl}/api/commits?repo=${repo.id}&base=${encodeURIComponent(trunkName)}&target=nothing-new`,
+    );
+    assert.equal(res.status, 200);
+    assert.deepEqual((await res.json()).commits, []);
+  });
+
+  test('a WORKING_TREE target is an empty list -- it is not a commit', async () => {
+    const repoPath = await trackedTempRepo('commits-wt');
+    const repo = await registerRepo(baseUrl, repoPath);
+    const res = await fetch(`${baseUrl}/api/commits?repo=${repo.id}&base=HEAD&target=WORKING_TREE`);
+    assert.equal(res.status, 200);
+    assert.deepEqual((await res.json()).commits, []);
+  });
+
+  test("a root commit reports git's empty tree as its base, and that base works", async () => {
+    const repoPath = await trackedTempRepo('commits-root');
+    // trackedTempRepo already made one (empty) commit on the trunk; branch it
+    // off as the unrelated side so `unrelated..orphaned` contains a real root.
+    await git(repoPath, ['branch', 'unrelated']);
+    await git(repoPath, ['checkout', '-q', '--orphan', 'orphaned']);
+    await writeFile(join(repoPath, 'root.txt'), 'root content\n');
+    await git(repoPath, ['add', 'root.txt']);
+    await commitAt(repoPath, 'the root commit', '2024-03-01T00:00:00+00:00');
+    const rootSha = await rev(repoPath, 'HEAD');
+
+    const repo = await registerRepo(baseUrl, repoPath);
+    const res = await fetch(`${baseUrl}/api/commits?repo=${repo.id}&base=unrelated&target=orphaned`);
+    assert.equal(res.status, 200);
+    const { commits } = await res.json();
+    assert.equal(commits.length, 1);
+    assert.equal(commits[0].sha, rootSha);
+    assert.equal(commits[0].base, '4b825dc642cb6eb9a060e54bf8d69288fbee4904');
+    assert.equal(commits[0].isRoot, true);
+
+    // Feeding that base straight back into /api/diff must produce the root
+    // commit's contents -- not a raw "unknown revision" git error.
+    const diffRes = await fetch(
+      `${baseUrl}/api/diff?repo=${repo.id}&base=${commits[0].base}&target=${commits[0].sha}`,
+    );
+    assert.equal(diffRes.status, 200);
+    const diffBody = await diffRes.json();
+    assert.deepEqual(diffBody.files.map((f) => f.path), ['root.txt']);
+    assert.equal(diffBody.files[0].status, 'added');
+  });
+
+  test('a merge commit is listed and labelled, based on its first parent', async () => {
+    const repoPath = await trackedTempRepo('commits-merge');
+    const trunkName = (await git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+
+    await git(repoPath, ['checkout', '-q', '-b', 'side']);
+    await writeFile(join(repoPath, 'side.txt'), 'side\n');
+    await git(repoPath, ['add', 'side.txt']);
+    await commitAt(repoPath, 'on side', '2024-03-01T00:00:00+00:00');
+
+    await git(repoPath, ['checkout', '-q', trunkName]);
+    await git(repoPath, ['checkout', '-q', '-b', 'feature']);
+    await writeFile(join(repoPath, 'feature.txt'), 'feature\n');
+    await git(repoPath, ['add', 'feature.txt']);
+    await commitAt(repoPath, 'on feature', '2024-03-02T00:00:00+00:00');
+    const featureSha = await rev(repoPath, 'HEAD');
+
+    await execFileAsync('git', ['merge', '-q', '--no-ff', '-m', 'merge side', 'side'], {
+      cwd: repoPath,
+      env: { ...process.env, GIT_COMMITTER_DATE: '2024-03-03T00:00:00+00:00' },
+    });
+    const mergeSha = await rev(repoPath, 'HEAD');
+
+    const repo = await registerRepo(baseUrl, repoPath);
+    const res = await fetch(
+      `${baseUrl}/api/commits?repo=${repo.id}&base=${encodeURIComponent(trunkName)}&target=feature`,
+    );
+    const { commits } = await res.json();
+    const merge = commits.find((c) => c.sha === mergeSha);
+    assert.ok(merge, 'merge commits are listed, not silently dropped');
+    assert.equal(merge.isMerge, true);
+    assert.equal(merge.base, featureSha);
+  });
+
+  test('selecting a commit shows only that commit, not the whole branch', async () => {
+    const repoPath = await trackedTempRepo('commits-isolation');
+    const trunkName = (await git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+    await git(repoPath, ['checkout', '-q', '-b', 'feature']);
+
+    await writeFile(join(repoPath, 'first.js'), 'const first = 1;\n');
+    await git(repoPath, ['add', 'first.js']);
+    await commitAt(repoPath, 'add first', '2024-03-01T00:00:00+00:00');
+
+    await writeFile(join(repoPath, 'second.js'), 'const second = 2;\n');
+    await git(repoPath, ['add', 'second.js']);
+    await commitAt(repoPath, 'add second', '2024-03-02T00:00:00+00:00');
+
+    const repo = await registerRepo(baseUrl, repoPath);
+    const { commits } = await (
+      await fetch(
+        `${baseUrl}/api/commits?repo=${repo.id}&base=${encodeURIComponent(trunkName)}&target=feature`,
+      )
+    ).json();
+
+    const whole = await (
+      await fetch(
+        `${baseUrl}/api/diff?repo=${repo.id}&base=${encodeURIComponent(trunkName)}&target=feature`,
+      )
+    ).json();
+    assert.deepEqual(whole.files.map((f) => f.path).sort(), ['first.js', 'second.js']);
+
+    for (const commit of commits) {
+      const one = await (
+        await fetch(`${baseUrl}/api/diff?repo=${repo.id}&base=${commit.base}&target=${commit.sha}`)
+      ).json();
+      const expected = commit.subject === 'add first' ? ['first.js'] : ['second.js'];
+      assert.deepEqual(one.files.map((f) => f.path), expected, `for ${commit.subject}`);
+    }
+  });
+
+  test('a base starting with a dash is rejected by requireRef, not handed to git', async () => {
+    const repoPath = await trackedTempRepo('commits-inject');
+    const repo = await registerRepo(baseUrl, repoPath);
+    const probe = join(tmpdir(), `lcr-PWNED-commits-${process.pid}-${Date.now()}.txt`);
+
+    const res = await fetch(
+      `${baseUrl}/api/commits?repo=${repo.id}&base=${encodeURIComponent(`--output=${probe}`)}&target=HEAD`,
+    );
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    // Must be requireRef's own message: a 400 that actually came from git's
+    // own "bad revision" would mean this endpoint skipped the validation
+    // layer, which a bare status assertion could not tell apart.
+    assert.match(body.error, /base must not start with '-'/);
+    assert.equal(await fileExists(probe), false);
+  });
+
+  test('a target starting with a dash is rejected the same way', async () => {
+    const repoPath = await trackedTempRepo('commits-inject-target');
+    const repo = await registerRepo(baseUrl, repoPath);
+    const probe = join(tmpdir(), `lcr-PWNED-commits-t-${process.pid}-${Date.now()}.txt`);
+
+    const res = await fetch(
+      `${baseUrl}/api/commits?repo=${repo.id}&base=HEAD&target=${encodeURIComponent(`--output=${probe}`)}`,
+    );
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /target must not start with '-'/);
+    assert.equal(await fileExists(probe), false);
+  });
+
+  test('a base containing a colon or whitespace is rejected with 400', async () => {
+    const repoPath = await trackedTempRepo('commits-colon');
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    for (const bad of ['HEAD:../../etc/passwd', 'HEAD foo']) {
+      const res = await fetch(
+        `${baseUrl}/api/commits?repo=${repo.id}&base=${encodeURIComponent(bad)}&target=HEAD`,
+      );
+      assert.equal(res.status, 400, `expected 400 for base=${JSON.stringify(bad)}`);
+      assert.match(
+        (await res.json()).error,
+        /must not contain whitespace, control characters, or ':'/,
+      );
+    }
+  });
+
+  test('is behind the same cross-origin guard as every other /api/ route', async () => {
+    const repoPath = await trackedTempRepo('commits-xorigin');
+    const repo = await registerRepo(baseUrl, repoPath);
+
+    const res = await fetch(`${baseUrl}/api/commits?repo=${repo.id}&base=HEAD&target=HEAD`, {
+      headers: { 'Sec-Fetch-Site': 'cross-site' },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  test('returns 404 for an unknown repo id', async () => {
+    const res = await fetch(`${baseUrl}/api/commits?repo=no-such-id&base=HEAD&target=HEAD`);
+    assert.equal(res.status, 404);
+  });
+
+  test('an unknown ref surfaces as a 400, not a 500', async () => {
+    const repoPath = await trackedTempRepo('commits-unknown-ref');
+    const repo = await registerRepo(baseUrl, repoPath);
+    const res = await fetch(`${baseUrl}/api/commits?repo=${repo.id}&base=HEAD&target=no-such-branch`);
+    assert.equal(res.status, 400);
+  });
+});
+
 describe('/api/check and persistence', () => {
   test('end-to-end: build repo, diff, check a change point, re-GET and see it persisted', async () => {
     const repoPath = await trackedTempRepo('e2e');

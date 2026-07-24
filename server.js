@@ -534,6 +534,47 @@ async function routeApi(req, res, url, pathname) {
     return sendJson(res, 200, { merged });
   }
 
+  // The commits on `target` that are not on `base` -- the list the front end
+  // turns into "review one commit at a time" instead of only the whole branch
+  // squashed into a single diff.
+  //
+  // Why this is not a field on /api/diff: the commit list is a property of the
+  // BRANCH range (base..target), while the diff the user is looking at may be
+  // a single commit's range instead. Folding them together would mean either
+  // recomputing the branch list on every per-commit diff (and having to carry
+  // the branch range along just to do it), or having the list go stale the
+  // moment a commit is selected. Kept separate, the list is fetched once per
+  // branch-range change and the diff endpoint stays exactly what it was.
+  //
+  // Selecting a commit needs no new diff machinery at all: each entry carries
+  // the `base` to pass straight back to /api/diff, and `git diff <parent>...
+  // <sha>` is byte-identical to `git diff <parent> <sha>` because
+  // merge-base(parent, sha) IS parent. See git.js's listCommits for the
+  // root-commit and merge-commit decisions.
+  //
+  // `base`/`target` are caller-supplied and reach a git command line, so they
+  // go through the same requireRef as /api/diff's, and this route sits after
+  // assertNotCrossOrigin() at the top of routeApi like every other /api/
+  // route -- it does not get, or bypass, a guard of its own.
+  if (pathname === '/api/commits' && method === 'GET') {
+    const repo = await getRepoOr404(url.searchParams.get('repo'));
+    const base = requireRef(url.searchParams.get('base'), 'base');
+    const target = requireRef(url.searchParams.get('target') || 'WORKING_TREE', 'target');
+
+    // The working tree is not a commit, so `base..WORKING_TREE` is not a
+    // revision range. Answering "no commits" is the honest answer and keeps
+    // the front end from having to special-case a 400 it caused itself.
+    if (target === 'WORKING_TREE') return sendJson(res, 200, { commits: [] });
+
+    let commits;
+    try {
+      commits = await git.listCommits(repo.path, base, target);
+    } catch (err) {
+      throw new HttpError(400, err.message);
+    }
+    return sendJson(res, 200, { commits });
+  }
+
   if (pathname === '/api/diff' && method === 'GET') {
     const repo = await getRepoOr404(url.searchParams.get('repo'));
     const base = requireRef(url.searchParams.get('base'), 'base');
